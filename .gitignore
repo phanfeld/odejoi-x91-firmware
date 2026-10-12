@@ -1,0 +1,38 @@
+# Python, editors, local tooling
+__pycache__/
+*.pyc
+.venv-docs/
+.claude/
+
+# Documentation build
+docs/_build/
+
+# Firmware images, dumps, device data and build output.
+# Only the flash procedure and checksums are tracked here.
+x91_dump/*
+!x91_dump/x91_flash.py
+!x91_dump/SHA256SUMS.txt
+!x91_dump/flash_helpers/
+x91_dump/flash_helpers/*
+!x91_dump/flash_helpers/SHA256SUMS.txt
+
+# Generated previews of the stock and custom images
+/x91_preview*.html
+
+# Third-party checkouts, vendor files and generated listings
+firmware_analysis/*
+!firmware_analysis/tools/
+!firmware_analysis/package_summary.tsv
+
+# Renders of the stock firmware (made by make_board.py from a dump)
+design/mock/stock-main.png
+design/mock/font-stock.png
+design/X91 design concept.html
+
+# Test media and research notes
+cover_test/
+reports/
+research_notes/
+
+# Host test binary
+design/playlist/host_test
