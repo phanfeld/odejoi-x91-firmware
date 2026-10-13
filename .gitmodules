@@ -1,0 +1,4 @@
+[submodule "actions_flash"]
+	path = actions_flash
+	url = https://github.com/ilyakurdyukov/actions_flash.git
+	ignore = untracked
