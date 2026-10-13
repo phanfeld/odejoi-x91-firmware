@@ -1,0 +1,82 @@
+--- actions_dump.c	2026-10-13 02:08:40.103102855 +0200
++++ actions_dump_x91.c	2026-10-13 10:16:31.248470121 +0200
+@@ -377,6 +377,8 @@
+ 
+ static uint32_t scsi_tag = 1;
+ static int adfu_chip = 0;
++/* X91 additions: NAND geometry override for the LFI area, unfiltered tag scan */
++static int geom_psec = 0, geom_psize = 0, scan_all = 0, scan_page = 0;
+ 
+ static int check_usbs(usbio_t *io, void *ptr) {
+ 	usbs_cmd_t *usbs = (usbs_cmd_t*)(ptr ? ptr : io->buf);
+@@ -878,6 +880,18 @@
+ 	npages2 = npages == 0xc0 ? 0x100 : npages;
+ 	nblock = READ16_LE(mem + 0x48e);
+ 
++	if (geom_psize) {
++		uint8_t conf[12];
++		read_mem_buf(io, x->nand_args + 0x14, 12, conf, 12);
++		DBG_LOG("nand_conf: psec=0x%x psize=0x%x -> psec=0x%x psize=0x%x\n",
++				conf[0], READ16_LE(conf + 10), geom_psec, geom_psize);
++		conf[0] = geom_psec;
++		conf[10] = geom_psize & 0xff; conf[11] = geom_psize >> 8;
++		write_mem_buf(io, x->nand_args + 0x14, 12, conf, 12);
++		psize = geom_psize;
++	}
++	DBG_LOG("nblock = 0x%x, pages per block = 0x%x, page size = 0x%x\n", nblock, npages, psize);
++
+ 	memset(tab, ~0, sizeof(tab));
+ 
+ 	// for a faster scan
+@@ -887,14 +901,20 @@
+ 		if (mem[9] <= 0xc) n <<= 1;
+ 		if (adfu_chip != 2157 && mem[9] >= 0x18) n <<= 1;
+ 		n = (1 << n) - 1;
++		if (scan_all) n = 3;
+ 		WRITE32_LE(buf, n);
+ 		write_mem_buf(io, x->nand_args + 8, 4, buf, 4);
+ 	}
+ 
+ 	for (i = 0; i < nblock; i++) {
+ 		uint8_t buf[8];
+-		nandread_read(io, x, i * npages2, NULL, 0);
++		nandread_read(io, x, i * npages2 + scan_page, NULL, 0);
+ 		read_mem_buf(io, x->nand_args + 12, 8, buf, 8);
++		if (scan_all) {
++			printf("blk 0x%03x: %02x %02x %02x %02x  %02x %02x %02x %02x\n", i,
++					buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
++			continue;
++		}
+ 		if (buf[0] != 0xff || buf[1] != 0x40) continue;
+ 		printf("0x%x: %02x %02x %02x %02x  %02x %02x %02x %02x\n", i * npages2,
+ 				buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7]);
+@@ -922,7 +942,7 @@
+ 	// restore old value
+ 	{
+ 		uint8_t buf[4];
+-		uint32_t n = mem[5];
++		uint32_t n = geom_psec ? (uint32_t)geom_psec : mem[5];
+ 		if (adfu_chip == 2157 && mem[9] >= 0x18) n >>= 1;
+ 		n = (2u << (n - 1)) - 1;
+ 		WRITE32_LE(buf, n);
+@@ -1313,6 +1333,20 @@
+ 			write_flash(io, addr, offset, size, fn, blk_size);
+ 			argc -= 5; argv += 5;
+ 
++		} else if (!strcmp(argv[1], "lfi_geom")) {
++			if (argc <= 3) ERR_EXIT("bad command\n");
++			geom_psec = strtol(argv[2], NULL, 0);
++			geom_psize = strtol(argv[3], NULL, 0);
++			if (geom_psize != 0x2000 && geom_psize != 0x4000)
++				ERR_EXIT("page size must be 0x2000 or 0x4000\n");
++			if (geom_psec != geom_psize >> 9) ERR_EXIT("psec must be psize / 512\n");
++			argc -= 3; argv += 3;
++
++		} else if (!strcmp(argv[1], "scan_all")) {
++			if (argc <= 2) ERR_EXIT("bad command\n");
++			scan_all = 1; scan_page = strtol(argv[2], NULL, 0);
++			argc -= 2; argv += 2;
++
+ 		} else if (!strcmp(argv[1], "chip")) {
+ 			if (argc <= 2) ERR_EXIT("bad command\n");
+ 			adfu_chip = atoi(argv[2]);
