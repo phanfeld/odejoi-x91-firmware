@@ -55,6 +55,9 @@ typedef struct {                         /* where a file is, as VFS_OFFSET repor
 #define LIST_DRAW_LIST 2                 /* rows only */
 #define LIST_DRAW_ALL  3                 /* background, title and rows */
 #define STYLE_PICKER  0x6004             /* the list style of the stock "Add to playlist" sub-menu */
+#define STYLE_DIR     0x6000             /* the file lists' style (DIRLIST): since stage 24 nothing in the status bar */
+#define STYLE_COUNTED 0x6003             /* stage 24: the same look with the counter (stock MENULIST_HEAD, unused) */
+#define STYLE_NAMED   0x6005             /* stage 24: the same look with the title (stock MENULIST_TITLE2, unused) */
 #define ICON_PLAYLIST 6                  /* row icons of that sub-menu */
 #define ICON_ADD      15                 /* the icon of "Add to playlist" in the options */
 #define ICON_REMOVE   16                 /* the icon of "Remove from Playlist" */
@@ -180,7 +183,8 @@ void engine_seek(u32 *break_point);      /* 12 bytes: time in ms, file offset, e
 void previous_song(void);                /* what the Previous key does in the stock firmware */
 volatile u32 *elapsed_ms(void);          /* the playing screen's copy of the playing time */
 u32 engine_time(void);                   /* the engine's own playing time (ms) */
-int music_playing(void);                 /* the music engine runs in the background and plays */
+int music_playing(void);                 /* the music engine runs in the background (playing or paused) */
+const dir_brow_t *list_level(void);   /* the shared list control's browser state */
 void engine_stop(void);
 int playing_source(void);                /* where the playing song was chosen: FSEL_M3U for a playlist */
 int browser_enter_dir(int type, int list_no, dir_brow_t *b);
@@ -212,7 +216,11 @@ static inline __attribute__((always_inline)) uptr vfs(uptr a, uptr b, uptr c, in
 {
     return FAR(0x1102e7, uptr (*)(s32, uptr, uptr, uptr, int))(*(volatile s32 *)0x200020, a, b, c, cmd);
 }
-static inline __attribute__((always_inline)) uptr ui(uptr a, uptr b, uptr c, int cmd) { return FAR(0x1102e9, uptr (*)(uptr, uptr, uptr, int))(a, b, c, cmd); }
+/* the display driver's entry (svc 6) is resident; other programs have it elsewhere (liststyle.c is compiled with theirs) */
+#ifndef UI_ENTRY
+#define UI_ENTRY 0x1102e9
+#endif
+static inline __attribute__((always_inline)) uptr ui(uptr a, uptr b, uptr c, int cmd) { return FAR(UI_ENTRY, uptr (*)(uptr, uptr, uptr, int))(a, b, c, cmd); }
 static inline __attribute__((always_inline)) void delay_tick(void) { FAR(0x1102e1, uptr (*)(uptr, uptr, uptr, int))(1, 0, 0, 49); }
 static inline __attribute__((always_inline)) int get_gui_msg(void *msg) { return FAR(0x110435, int (*)(void *))(msg); }
 static inline __attribute__((always_inline)) int get_app_msg(void *msg) { return FAR(0x11030d, int (*)(void *))(msg); }
@@ -255,12 +263,20 @@ static inline __attribute__((always_inline)) void engine_stop(void) { FAR(0x1103
    The playing screen's own copy (elapsed_ms) is not updated while the screen is off. */
 static inline __attribute__((always_inline)) u32 engine_time(void) { return *(volatile u32 *)0x200914; }
 /* The two bytes of the shared state at 0x202fbc that the stock screen-off "previous" and "next" check (0x18da1cec):
-   the background engine is the music engine, and it plays. */
+   the background engine is the music engine, and it runs (a song is playing or paused). */
 static inline __attribute__((always_inline)) int music_playing(void)
 {
     return ((volatile u8 *)0x202fbc)[1] == 1 && ((volatile u8 *)0x202fbc)[0] == 1;
 }
 static inline __attribute__((always_inline)) int playing_source(void) { return *(volatile u8 *)0x200324; }
+/* The shared list control's browser state (g_dir_browser): MUSIC.AP 0x2006fc, which the control reads at 0x18661280
+   (layer, lists, songs) and refreshes through browser_enter_dir at 0x18661490. The other programs with the control
+   have it elsewhere (the literal at 0x18661400 of their copy); liststyle.c is compiled with theirs. Not volatile:
+   list_box reads each field once, which keeps it inside the room at the end of the control's bank. */
+#ifndef LIST_LEVEL_AT
+#define LIST_LEVEL_AT 0x2006fc
+#endif
+static inline __attribute__((always_inline)) const dir_brow_t *list_level(void) { return (const dir_brow_t *)LIST_LEVEL_AT; }
 
 /* the browser (veneers in MUSIC.AP 0x18161422, 0x1816142c, 0x18161436, 0x1830150a, 0x182e11d0, 0x182e11da) */
 static inline __attribute__((always_inline)) int browser_enter_dir(int type, int list_no, dir_brow_t *b)
@@ -294,4 +310,15 @@ static inline __attribute__((always_inline)) u32 stock_m3u_result(u8 *path_info,
 }
 
 #endif
+
+/* Stage 24: the background of the list styles drawn with the status bar on (0x6000, 0x6002 to 0x6005) starts at row
+   16, so a full redraw of a list no longer wipes the bar's marks; the code that draws them first clears the bar's
+   middle, x 17 to 97 (between the card mark and the Bluetooth mark), and the marks, bordered in black out to the
+   bar's edges, paint the rest of rows 0 to 15: liststyle.c and the picker (playlist.c) here, patches/menu_box.S
+   (same picture and place) for every other list. */
+#define UI_PICTURE   31                  /* display command: a picture at x, y */
+#define BAR_CLEAR    (0x8000 | 127)      /* COMMON.STY picture 127: 81 x 16, black (a view into picture 185) */
+#define BAR_CLEAR_X  17
+static inline __attribute__((always_inline)) void clear_bar(void) { ui(BAR_CLEAR, BAR_CLEAR_X, 0, UI_PICTURE); }
+
 #endif

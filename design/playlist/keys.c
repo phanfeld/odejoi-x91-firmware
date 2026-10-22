@@ -7,7 +7,7 @@
  * 0x1102b5) only for a plain press, after its own cases for A-B repeat and fast winding; design/build_stage20.py
  * points that one call (0x180a13b6) to previous_key. With the screen off, the program's shared key filter
  * (0x18b41a00) handles Previous, Next, Play and the volume itself; its "previous" (0x18da1cec with 0, which sends
- * 0x31b to the engine while the music engine plays) is called at 0x18b41a6e, which stage 23 points to
+ * 0x31b to the engine while the music engine runs) is called at 0x18b41a6e, which stage 23 points to
  * standby_previous. The playing screen does not update its time while the screen is off, so that one asks the
  * engine's RAM for it.
  *
@@ -45,7 +45,7 @@ void previous_key(void)
     previous_after(*elapsed_ms());
 }
 
-/* Previous with the screen off: as the stock one, only while the music engine plays. */
+/* Previous with the screen off: as the stock one, only while the music engine runs (a song playing or paused). */
 void standby_previous(void)
 {
     if (music_playing())

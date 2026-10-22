@@ -192,8 +192,10 @@ static void list_draw(list_t *l, int top, int mode)
     st.id = STYLE_PICKER;
     st.type = 1;
     st.reserve = 0;
-    if (mode == LIST_DRAW_ALL)
+    if (mode == LIST_DRAW_ALL) {                           /* the bar on, its middle empty (stage 24) */
         headbar_all();
+        clear_bar();
+    }
     list_prepare(&st);
     set_bytes(box, 0, sizeof *box);
     for (r = 0; r < ROWS && top + r < l->total; r++) {
