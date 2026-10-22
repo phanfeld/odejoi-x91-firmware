@@ -55,13 +55,14 @@
 #define HALF          (REC / 2)          /* records are written in two halves, to keep the stack small */
 #define ERROR         0xffffffffu
 
-static int rd(uptr h, u32 off, void *buf, u32 n)
+/* rd and wr are written into every caller: the loops that use them must not call into another code bank. */
+static inline __attribute__((always_inline)) int rd(uptr h, u32 off, void *buf, u32 n)
 {
     vfs(off, SEEK_FROM_SET, h, VFS_SEEK);
     return (u32)vfs((uptr)buf, n, h, VFS_READ) == n;
 }
 
-static int wr(uptr h, u32 off, const void *buf, u32 n)
+static inline __attribute__((always_inline)) int wr(uptr h, u32 off, const void *buf, u32 n)
 {
     vfs(off, SEEK_FROM_SET, h, VFS_SEEK);
     return (u32)vfs((uptr)buf, n, h, VFS_WRITE) == n;
@@ -151,9 +152,9 @@ static void record_tail(u8 *b, const u8 *ext, int id3, u32 track, u32 cluster, u
         b[R_LAYER - HALF + k] = layer[k];
 }
 
-static int write_song(uptr h, u32 i, int list, const u8 *loc, const u8 *name, int n)
+/* b: HALF bytes of the caller's */
+static int write_song(uptr h, u32 i, int list, const u8 *loc, const u8 *name, int n, u8 *b)
 {
-    u8 b[HALF] __attribute__((aligned(4)));
     int k;
 
     set_bytes(b, 0, HALF);
@@ -189,29 +190,34 @@ static int write_list(uptr h, u32 k, const place_t *p, const u8 *name, int n)
     return wr(h, SECTOR + k * REC + HALF, b, HALF);
 }
 
-int lib_add_list(uptr h, const place_t *p, const u8 *name, int n)
+/* The sorted order with record lists (the new one) at its end, in the sectors behind lists + 1 records. */
+static int append_to_order(uptr h, u32 lists)
 {
     u16 order[LISTS_MAX + 1];
-    u32 lists = rd16(h, H_LISTS), at, k, seen[2] = {0, 0};
+    u32 at = rd16(h, H_ORDER), k, seen[2] = {0, 0};
 
-    if (lists >= LISTS_MAX)
-        return -1;
-    at = rd16(h, H_ORDER);
     if (lists && (at < 2 || at > 36 || !rd(h, at * SECTOR, order, lists * 2)))
-        return -1;
+        return 0;
     for (k = 0; k < lists; k++) {                       /* the order must be a permutation, else leave it alone */
         if (order[k] >= lists || seen[order[k] >> 5] & 1u << (order[k] & 31))
-            return -1;
+            return 0;
         seen[order[k] >> 5] |= 1u << (order[k] & 31);
     }
     order[lists] = (u16)lists;
     at = 1 + (lists + 2) / 2;                           /* the first sector behind lists + 1 records */
     if (!wr(h, at * SECTOR, order, (lists + 1) * 2))
-        return -1;
+        return 0;
     for (k = 0; k <= lists; k++)                        /* the inverse: each record's place in the order */
         if (!wr16(h, (at + 1) * SECTOR + 2 * order[k], k))
-            return -1;
-    if (!wr16(h, H_ORDER, at) || !wr16(h, H_INVERSE, at + 1))
+            return 0;
+    return wr16(h, H_ORDER, at) && wr16(h, H_INVERSE, at + 1);
+}
+
+int lib_add_list(uptr h, const place_t *p, const u8 *name, int n)
+{
+    u32 lists = rd16(h, H_LISTS);
+
+    if (lists >= LISTS_MAX || !append_to_order(h, lists))
         return -1;
     if (!write_list(h, lists, p, name, n) || !wr16(h, H_COUNT + 2 * lists, 0) || !wr16(h, H_AUDIBLE + 2 * lists, 0)
         || !wr16(h, H_LISTS, lists + 1))
@@ -236,7 +242,7 @@ int lib_add_song(uptr h, int list, const u8 *loc, const u8 *name, int n)
         u32 pos[2];
         pos[0] = cluster;
         pos[1] = entry;
-        if (total == SONGS_MAX || !write_song(h, total, list, loc, name, n) || !wr(h, POS + total * 8, pos, 8)
+        if (total == SONGS_MAX || !write_song(h, total, list, loc, name, n, (u8 *)buf) || !wr(h, POS + total * 8, pos, 8)
             || !wr16(h, H_SONGS, total + 1))
             return 0;
         song = (int)total;
@@ -263,12 +269,33 @@ int lib_add_song(uptr h, int list, const u8 *loc, const u8 *name, int n)
     return wr16(h, base + count * 2, (u32)song) && wr16(h, H_COUNT + 2 * list, count + 1);
 }
 
+/* In the list of playlists using song: playlist from becomes to; to = 0xff takes it out (the rest moves up). */
+static void users_change(uptr h, u32 song, u32 from, u32 to)
+{
+    u8 users[LISTS_MAX];
+    u32 at = SONGS + song * REC + R_USERS, k, kept;
+
+    if (!rd(h, at, users, LISTS_MAX))
+        return;
+    for (k = kept = 0; k < LISTS_MAX; k++) {
+        if (users[k] == 0xff)
+            continue;
+        if ((users[k] & 0x7f) == from) {
+            if (to == 0xff)
+                continue;
+            users[k] = (u8)((users[k] & 0x80) | to);
+        }
+        users[kept++] = users[k];
+    }
+    set_bytes(users + kept, 0xff, (int)(LISTS_MAX - kept));
+    wr(h, at, users, LISTS_MAX);
+}
+
 int lib_remove_song(uptr h, int list, const u8 *loc)
 {
     u16 buf[CHUNK];
-    u8 *users = (u8 *)buf;                              /* used one after the other */
     u32 total = rd16(h, H_SONGS), count = rd16(h, H_COUNT + 2 * list), base = INDEX + (u32)list * INDEX_SIZE;
-    u32 r, w = 0, m, k, kept, at;
+    u32 r, w = 0, m, k, kept;
     int song;
 
     if (total > SONGS_MAX || count > INDEX_SIZE / 2)
@@ -289,13 +316,182 @@ int lib_remove_song(uptr h, int list, const u8 *loc)
     }
     if (w != count && !wr16(h, H_COUNT + 2 * list, w))
         return 0;
-    at = SONGS + (u32)song * REC + R_USERS;
-    if (rd(h, at, users, LISTS_MAX)) {
-        for (k = kept = 0; k < LISTS_MAX; k++)
-            if (users[k] != 0xff && (users[k] & 0x7f) != (u32)list)
-                users[kept++] = users[k];
-        set_bytes(users + kept, 0xff, (int)(LISTS_MAX - kept));
-        wr(h, at, users, LISTS_MAX);
-    }
+    users_change(h, (u32)song, (u32)list, 0xff);
     return w != count;
+}
+
+int lib_lists(uptr h)
+{
+    return (int)rd16(h, H_LISTS);
+}
+
+int lib_order(uptr h, int k)
+{
+    u32 at = rd16(h, H_ORDER), lists = rd16(h, H_LISTS), r;
+
+    if (k < 0 || (u32)k >= lists || at < 2 || at > 36)
+        return -1;
+    r = rd16(h, at * SECTOR + 2 * (u32)k);
+    return r < lists ? (int)r : -1;
+}
+
+int lib_list(uptr h, int list, place_t *p, u16 *name)
+{
+    u32 at = SECTOR + (u32)list * REC;
+
+    if (list < 0 || (u32)list >= rd16(h, H_LISTS))
+        return 0;
+    if (name && !rd(h, at, name, 56))
+        return 0;
+    if (name)
+        name[27] = 0;
+    return !p || (rd(h, at + R_CLUSTER, &p->cluster, 8) && rd(h, at + R_LAYER, p->layer, LAYER_SIZE));
+}
+
+int lib_count(uptr h, int list)
+{
+    u32 n = rd16(h, H_COUNT + 2 * (u32)list);
+    return n <= INDEX_SIZE / 2 ? (int)n : -1;
+}
+
+int lib_song(uptr h, int list, int pos, place_t *p)
+{
+    u32 s = rd16(h, INDEX + (u32)list * INDEX_SIZE + 2 * (u32)pos), at;
+
+    if (s == ERROR || (s & 0x7fff) >= rd16(h, H_SONGS))
+        return -1;
+    s &= 0x7fff;
+    at = SONGS + s * REC;
+    if (p && !(rd(h, at + R_CLUSTER, &p->cluster, 8) && rd(h, at + R_LAYER, p->layer, LAYER_SIZE)))
+        return -1;
+    return (int)s;
+}
+
+int lib_has_song(uptr h, int list, const u8 *loc)
+{
+    u8 users[LISTS_MAX];
+    int song = find_song(h, rd16(h, H_SONGS), get32(loc + LOC_CLUSTER), get32(loc + LOC_ENTRY)), k;
+
+    if (song < 0 || !rd(h, SONGS + (u32)song * REC + R_USERS, users, LISTS_MAX))
+        return 0;
+    for (k = 0; k < LISTS_MAX; k++)
+        if (users[k] != 0xff && (users[k] & 0x7f) == (u32)list)
+            return 1;
+    return 0;
+}
+
+/* Copies n u16 entries from src to dst (byte offsets); overlapping ranges are fine either way. */
+static int move_entries(uptr h, u32 dst, u32 src, u32 n)
+{
+    u16 buf[CHUNK];
+    u32 i, m;
+
+    if (dst < src) {
+        for (i = 0; i < n; i += m) {
+            m = n - i < CHUNK ? n - i : CHUNK;
+            if (!rd(h, src + 2 * i, buf, m * 2) || !wr(h, dst + 2 * i, buf, m * 2))
+                return 0;
+        }
+    } else if (dst > src) {
+        for (i = n; i > 0; i -= m) {
+            m = i < CHUNK ? i : CHUNK;
+            if (!rd(h, src + 2 * (i - m), buf, m * 2) || !wr(h, dst + 2 * (i - m), buf, m * 2))
+                return 0;
+        }
+    }
+    return 1;
+}
+
+int lib_move_song(uptr h, int list, int from, int to)
+{
+    u32 count = rd16(h, H_COUNT + 2 * (u32)list), base = INDEX + (u32)list * INDEX_SIZE, v;
+
+    if (count > INDEX_SIZE / 2 || from < 0 || to < 0 || (u32)from >= count || (u32)to >= count)
+        return 0;
+    v = rd16(h, base + 2 * (u32)from);
+    if (v == ERROR)
+        return 0;
+    if (from < to && !move_entries(h, base + 2 * (u32)from, base + 2 * (u32)from + 2, (u32)(to - from)))
+        return 0;
+    if (from > to && !move_entries(h, base + 2 * (u32)to + 2, base + 2 * (u32)to, (u32)(from - to)))
+        return 0;
+    return wr16(h, base + 2 * (u32)to, v);
+}
+
+/* The users of the songs of a playlist: from becomes to (0xff: out). */
+static int list_users(uptr h, u32 list, u32 from, u32 to)
+{
+    u16 buf[CHUNK];
+    u32 count = rd16(h, H_COUNT + 2 * list), base = INDEX + list * INDEX_SIZE, i, k, m;
+
+    if (count > INDEX_SIZE / 2)
+        return 0;
+    for (i = 0; i < count; i += m) {
+        m = count - i < CHUNK ? count - i : CHUNK;
+        if (!rd(h, base + 2 * i, buf, m * 2))
+            return 0;
+        for (k = 0; k < m; k++)
+            users_change(h, buf[k] & 0x7fffu, from, to);
+    }
+    return 1;
+}
+
+/* Playlist record from becomes record to, its previous and next numbers to's. */
+static int copy_record(uptr h, u32 from, u32 to)
+{
+    u8 b[HALF] __attribute__((aligned(4)));
+    u32 half;
+
+    for (half = 0; half < REC; half += HALF) {
+        if (!rd(h, SECTOR + from * REC + half, b, HALF))
+            return 0;
+        if (half) {
+            put16(b + R_PREV - HALF, to - 1);
+            put16(b + R_NEXT - HALF, to + 1);
+        }
+        if (!wr(h, SECTOR + to * REC + half, b, HALF))
+            return 0;
+    }
+    return 1;
+}
+
+/* The sorted order without playlist list, the last record renumbered to list. */
+static int drop_from_order(uptr h, u32 list, u32 lists)
+{
+    u16 order[LISTS_MAX];
+    u32 last = lists - 1, at = rd16(h, H_ORDER), k, n;
+
+    if (at < 2 || at > 36 || !rd(h, at * SECTOR, order, lists * 2))
+        return 0;
+    for (k = n = 0; k < lists; k++)
+        if (order[k] != (u32)list)
+            order[n++] = (u16)(order[k] == last ? list : order[k]);
+    at = 1 + (n + 1) / 2;                               /* the first sector behind n records */
+    if (!wr(h, at * SECTOR, order, n * 2))
+        return 0;
+    for (k = 0; k < n; k++)
+        if (!wr16(h, (at + 1) * SECTOR + 2 * order[k], k))
+            return 0;
+    return wr16(h, H_ORDER, at) && wr16(h, H_INVERSE, at + 1);
+}
+
+int lib_delete_list(uptr h, int list)
+{
+    u32 lists = rd16(h, H_LISTS), last, count;
+
+    if (list < 0 || (u32)list >= lists || lists > LISTS_MAX)
+        return 0;
+    last = lists - 1;
+    if (rd16(h, H_ORDER) < 2 || !list_users(h, (u32)list, (u32)list, 0xff))
+        return 0;
+    if ((u32)list != last) {                            /* the last playlist moves into the freed record */
+        count = rd16(h, H_COUNT + 2 * last);
+        if (!list_users(h, last, last, (u32)list)
+            || !move_entries(h, INDEX + (u32)list * INDEX_SIZE, INDEX + last * INDEX_SIZE, count)
+            || !wr16(h, H_COUNT + 2 * (u32)list, count) || !wr16(h, H_AUDIBLE + 2 * (u32)list, rd16(h, H_AUDIBLE + 2 * last))
+            || !copy_record(h, last, (u32)list))
+            return 0;
+    }
+    return drop_from_order(h, (u32)list, lists) && wr16(h, H_COUNT + 2 * last, 0) && wr16(h, H_AUDIBLE + 2 * last, 0)
+        && wr16(h, H_LISTS, last);
 }
