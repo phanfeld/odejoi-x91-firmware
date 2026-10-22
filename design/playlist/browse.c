@@ -12,7 +12,8 @@
  * How it hooks in: the list option callback (MUSIC.AP 0x18161000) hands the result of the chosen option row, the
  * browser's path info and the list row the options were opened on to a result handler; build_stage21.py points
  * its two calls (0x1816102e, 0x18161092) to list_option and m3u_option, which pass everything they do not handle
- * to the stock handlers. The option rows are the stock ones of the built-in playlists and return their codes (add
+ * to the stock handlers; "Search" (stage 25, 0x8606 in both) goes on to search.c. The option rows are the stock ones
+ * of the built-in playlists and return their codes (add
  * 0x8605, remove 0x8608, clear 0x8609). After a removal the list is told so (RESULT_DELETE_FILE or
  * RESULT_DELETE_DIRLIST): it takes the row out and reads itself again (SDK ui_directory2.c,
  * directory_option_deal).
@@ -21,6 +22,7 @@
 #include "util.h"
 #include "library.h"
 #include "playlist.h"
+#include "search.h"
 
 #define NAME_UNITS 66                    /* a playlist file's name for removing it */
 
@@ -487,9 +489,11 @@ static u32 move_song(u8 *path_info, int active, int list)
 
 /* ------------------------------------------------------------------ the result handlers */
 
-/* The song lists' options (MUSIC.AP 0x1816102e). */
+/* The song lists' options (MUSIC.AP 0x1816102e). "Search" (stage 25) works on whatever level the list shows. */
 u32 list_option(u8 *path_info, u32 check, u32 active)
 {
+    if (check == RESULT_SEARCH)
+        return search_list(path_info);
     if (check != RESULT_ADD_FAVOR1)
         return stock_list_result(path_info, check, active);
     if ((s32)(short)active <= 0)                        /* rows put on top of a list: no song there */
@@ -497,9 +501,9 @@ u32 list_option(u8 *path_info, u32 check, u32 active)
     return add_selected(path_info, (int)active);
 }
 
-/* The Playlists list's options (MUSIC.AP 0x18161092). Which level the list is at: the browser keeps the playlist
- * it is in at 0x200116 (0xffff at the top, MUSIC.AP 0x1c0c22d2); its number of rows must agree with the library. */
-u32 m3u_option(u8 *path_info, u32 check, u32 active)
+/* The Playlists list's options other than "Search". Which level the list is at: the browser keeps the playlist it
+ * is in at 0x200116 (0xffff at the top, MUSIC.AP 0x1c0c22d2); its number of rows must agree with the library. */
+static u32 m3u_edit(u8 *path_info, u32 check, u32 active)
 {
     int list = m3u_list(), rows = list_rows(0), lists = -1, songs = -1;
     uptr h;
@@ -521,4 +525,12 @@ u32 m3u_option(u8 *path_info, u32 check, u32 active)
         return check == RESULT_DEL_FAVOR ? delete_playlist((int)active) : RESULT_REDRAW;
     dialog_text(0x8000, 2, S_OPEN_FAILED);                /* the library and the list disagree: "Update list?" */
     return RESULT_REDRAW;
+}
+
+/* The Playlists list's options (MUSIC.AP 0x18161092). "Search" (stage 25) goes on from here with the least stack. */
+u32 m3u_option(u8 *path_info, u32 check, u32 active)
+{
+    if (check == RESULT_SEARCH)
+        return search_list(path_info);
+    return m3u_edit(path_info, check, active);
 }

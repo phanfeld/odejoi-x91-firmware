@@ -63,6 +63,24 @@ typedef struct {                         /* where a file is, as VFS_OFFSET repor
 #define ICON_REMOVE   16                 /* the icon of "Remove from Playlist" */
 #define TEXT_ID       0x7e               /* string descriptor types */
 #define TEXT_UTF16    0x7d
+#define TEXT_UTF8     0x7c
+
+/* Stage 25 draws a screen of its own (search.c) with these (DRV_UI.DRV functions 17 to 21, read in the driver: the
+   DC is two words at 0x204b50, pen then background; "clear" fills a region, or the screen for 0, with the
+   background colour; a string is drawn into a region by a mode as the SDK's display.h names its bits) */
+#define UI_DC_GET     17                 /* (u32 dc[2]): pen and background colour */
+#define UI_CLEAR      18                 /* (region_t *) */
+#define UI_PEN        19                 /* (RGB565) */
+#define UI_BACKGD     20                 /* (RGB565) */
+#define UI_STRING     21                 /* (strdesc_t *, region_t *, mode); the driver copies at most 200 bytes */
+#define DRAW_DOTS     3                  /* mode bits 0-1: only the glyphs' dots, what is behind stays */
+#define ALIGN_LEFT    (0 << 2)           /* bits 2-3 */
+#define ALIGN_CENTRE  (1 << 2)
+#define ALIGN_RIGHT   (2 << 2)
+#define LONG_CUT      (1 << 4)           /* bits 4-7: a character that does not fit is left out */
+#define LONG_DOTS     (3 << 4)           /* ... or the text ends in an ellipsis */
+#define NO_ARABIC     (1 << 15)
+typedef struct { u16 x, y, w, h; } region_t;
 
 typedef struct {                         /* string_desc_t, 12 bytes */
     uptr str;                            /* text, or a string id in the low 16 bits */
@@ -111,6 +129,23 @@ typedef struct {                         /* dialog_com_data_t as the stock add r
 #define RESULT_ADD_FAVOR1 0x8605         /* what option rows return (MUSIC.AP 0x181613df, 0x18161413, 0x1816140b) */
 #define RESULT_DEL_FAVOR  0x8608
 #define RESULT_CLR_FAVOR  0x8609
+#define RESULT_SEARCH     0x8606         /* stage 25's "Search" rows: the routine of the built-in "Playlist 2" (0x181613e7) */
+
+/* The keys themselves, for a screen that uses all four directions (the menu key table maps only Up and Down):
+   a gui message (8 bytes, SDK input_gui_msg_t) has its type at +0 (0 a key), the key at +2 and the key's event bits
+   at +4, as the key mapping at 0x18aa1a00 reads them; Previous and Next as the playing screen's table (0x180a1530)
+   has them. */
+#define KEY_MENU      0x03
+#define KEY_PREV      0x04
+#define KEY_PLAY      0x05
+#define KEY_NEXT      0x06
+#define KEY_RETURN    0x80
+#define KEY_UP        0x82
+#define KEY_DOWN      0x83
+#define KT_DOWN       0x2000             /* pressed */
+#define KT_LONG       0x1000             /* held long, once */
+#define KT_HOLD       0x0800             /* still held, repeated */
+#define KT_SHORT_UP   0x0400             /* let go before it was long */
 
 /* ------------------------------------------------------------------ texts of MUSIC.STY and COMMON.STY */
 
@@ -146,6 +181,17 @@ enum { FSEL_PLAYLIST = 3, FSEL_M3U = 8 };                    /* file sources: th
 enum { SCAN_SELF = 0, SCAN_FILE = 1, SCAN_ERROR = 4 };
 #define SCAN_DXCH 1
 #define ROW_NAME 52                      /* what the stock code takes of a row's name */
+
+/* The list control's own state (the SDK's dir_control_t, MUSIC.AP 0x200714; the control's code at 0x18661200 and
+   0x18681200 uses these fields). Rows are counted from 1 and include the menu rows the control puts on top ("Repeat
+   All Songs", an artist's "All songs"; their number is at 0x20070a, the SDK's dir_menu_title.count). */
+typedef struct {
+    u8 disk, source, page, reserve;      /* page: lines of the list style */
+    uptr dir_com;
+    u16 top, bottom, total;              /* the rows shown, and all rows */
+    u16 list_no, active, old;            /* the chosen row; its line on the page (from 1) */
+    u8 update, draw, enter_dir, pad;     /* what the control does next: read rows, draw, read the level's head */
+} dirctl_t;
 
 /* ------------------------------------------------------------------ the playback engine */
 
@@ -197,6 +243,10 @@ u8 *browse_path(void);                   /* g_browser_filepath, which a scan fil
 int m3u_list(void);                      /* the playlist the browser is in (record number), 0xffff at the top */
 u32 stock_list_result(u8 *path_info, u32 check, u32 active);
 u32 stock_m3u_result(u8 *path_info, u32 check, u32 active);
+dirctl_t *dir_control(void);
+int menu_rows(void);
+u32 dir_select(u8 *path_info, dirctl_t *dc);
+u8 *timer_tag(void);
 
 #else
 
@@ -211,6 +261,8 @@ _Static_assert(sizeof(place_t) == 84, "file place");
 _Static_assert(sizeof(dir_brow_t) == 12, "browser state");
 _Static_assert(sizeof(brow_decode_t) == 4, "browser rows");
 _Static_assert(sizeof(file_brow_t) == 12, "browser row");
+_Static_assert(sizeof(dirctl_t) == 24, "list control state");
+_Static_assert(sizeof(region_t) == 8, "region");
 
 static inline __attribute__((always_inline)) uptr vfs(uptr a, uptr b, uptr c, int cmd)
 {
@@ -308,6 +360,19 @@ static inline __attribute__((always_inline)) u32 stock_m3u_result(u8 *path_info,
 {
     return FAR(0x18161291, u32 (*)(u8 *, u32, u32))(path_info, check, active);
 }
+/* The list control (stage 25): its state, the menu rows on top, and its key handler (MUSIC.AP 0x18681200, the SDK's
+   directory_msg_deal_gui, which the control's message loop at 0x18661466 calls with an event of the menu key table)
+   with Select: on a row with lists below it keeps the level's place for Back (0x18701398), enters the row and sets
+   the control to read and draw the new level. */
+static inline __attribute__((always_inline)) dirctl_t *dir_control(void) { return (dirctl_t *)0x200714; }
+static inline __attribute__((always_inline)) int menu_rows(void) { return *(volatile u16 *)0x20070a; }
+static inline __attribute__((always_inline)) u32 dir_select(u8 *path_info, dirctl_t *dc)
+{
+    return FAR(0x18681201, u32 (*)(u8 *, dirctl_t *, u32))(path_info, dc, EV_SELECT);
+}
+/* The app timers fire only while their tag is the program's current one (0x20013d) or 0xff (resident 0x1104ac); the
+   list control sets 0x84 and has an 80 ms timer that scrolls the chosen row's long name. */
+static inline __attribute__((always_inline)) u8 *timer_tag(void) { return (u8 *)0x20013d; }
 
 #endif
 

@@ -38,6 +38,15 @@ the path info and the list row to a result handler (song lists 0x181612ee, Playl
 0x18161238). Row results: 0x8601 play, 0x8605 to 0x8607 add to built-in list 1 to 3, 0x8608 remove, 0x8609 clear.
 Since stage 21 the two handler calls (0x1816102e, 0x18161092) go to new code first.
 
+Each option menu comes in five lists by what plays in the background (0x181610d4 reads 0x202fbc): nothing (21),
+music playing (22, "Now playing" on top), music paused (23, "Last played"), radio playing (24), radio paused (25);
+26 to 30 likewise for Playlists, 31 to 40 for the built-in playlists 2 and 3. A row is 20 bytes: child list (0x7fff
+none), text, sub-title text, icon (a `COMMON.STY` picture), routine, 0, the shared routine. Since stage 25 lists 21
+to 30 end in "Search" (text 44, icon 107, the routine 0x181613e7 of the built-in "Playlist 2" row, which returns
+0x8606): the lists sat back to back, so 21 to 30 were laid out anew in the room of 21 to 40, and 31 to 40 (unreachable
+since stage 19) point at the rows of 26 to 30. `MUSIC.STY` text 44, "Reached maximum number of 'Playlists' …" (only
+for a full built-in playlist), reads "Search" in English.
+
 ## The playing screen
 
 | What | Where | Notes |
@@ -66,6 +75,7 @@ settings, Add to playlist, Remove from Playlist, Delete, Bookmarks).
 | 0x200030 | elapsed time (ms), the playing screen's copy |
 | 0x200116 | the playlist the Playlists list is in |
 | 0x200138, 0x20013c | app timer table pointer, count |
+| 0x20013d | the current app timer tag (the list control sets 0x84) |
 | 0x200140 | pointer to the program's message dispatcher |
 | 0x200162 | the status bar's background argument |
 | 0x200191 | last knob position (stage 9; a spare demo-mode byte) |
@@ -74,7 +84,9 @@ settings, Add to playlist, Remove from Playlist, Delete, Bookmarks).
 | 0x2003c0 | `g_browser_filepath`, the lists' browse path |
 | 0x200668 | the status bar's parts table |
 | 0x2006fc | `g_dir_browser`, the list control's browser state |
-| 0x200714 | the list control's own state (+21: draw mode) |
+| 0x200708 | the menu rows the list control puts on top (`dir_menu_title`; +2 their number) |
+| 0x200714 | the list control's own state (`dir_control_t`, {doc}`shared-code`) |
+| 0x200744 | the list control's rows of the page (`g_file_list`, 12 bytes each: extension, name length, name pointer) |
 | 0x10116c | the list control's list data (`listbox_private_t`) |
 
 ## Engine messages

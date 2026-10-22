@@ -40,8 +40,15 @@
 | 24 rebuilt again | `efa340ee…` | eBook name fine; status bar much faster, but a short blink when a menu or list opens |
 | 24 rebuilt a third time | `82eed591…` | built, not yet flashed |
 
-`x91_dump/themes/themes.json` lists the current image of each theme (stage 24: Amber `18fe3eee…`, Mint
-`e11acbca…`, Ice `2a0f2df8…`, Berry `82eed591…`).
+## 2026-10-23: search
+
+| Stage | Image (Berry) | Result |
+|---|---|---|
+| 25 | `e64bdfb6…` | Search with a T9 keypad in the music lists' options; built, not yet flashed |
+
+`x91_dump/themes/themes.json` lists the current image of each theme (stage 25: Amber `61618794…`, Mint
+`13f16611…`, Ice `ff56ddfe…`, Berry `e64bdfb6…`). Stage 24's images are unchanged (built from the frozen sources in
+`design/playlist/stage24/`).
 
 ## Early assumptions that were wrong
 

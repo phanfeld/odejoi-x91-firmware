@@ -42,6 +42,9 @@ Consequences, each found the hard way:
   in use must not load a 0x1000 bank; it has to sit in the caller's own bank (stage 24's `list_box`).
 - Each call into another bank of the same group swaps banks, so functions that call each other often should share a
   bank.
+- Calls into a group whose window overlaps the caller's come back to a reloaded caller as well: stock code does it
+  (`MUSIC.AP` has 8 calls from 0x1000-group banks into 0x1200-group banks, among them the list scene's call of the
+  list control at 0x18101208), and stage 25's search calls the list control's Select (0x18681200) that way.
 
 No stock code of `MUSIC.AP` uses the 0x1000 window above its banks' lengths as data, so bank tails are safe for new code; the placement caps a grown bank at 0x800 bytes (`BANK_MAX`), well under the group's largest stock length.
 

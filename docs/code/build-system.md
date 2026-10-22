@@ -6,7 +6,7 @@ Every stage is a script `design/build_stageN.py` with one job: read the previous
 the next image. Nothing is edited by hand, so every image can be rebuilt from the stock dump.
 
 ```
-x91_lfi_verified.bin ─ stage 1 ─ stage 3 (with stage 2's font) ─ stage 4 ─ … ─ stage 24 ─ x91_lfi_<theme>.bin
+x91_lfi_verified.bin ─ stage 1 ─ stage 3 (with stage 2's font) ─ stage 4 ─ … ─ stage 25 ─ x91_lfi_<theme>.bin
 ```
 
 A builder:
@@ -40,10 +40,11 @@ rather than followed by a new number.
 The images are deterministic. Two things keep them so when code changes:
 
 - **Frozen sources.** A stage that changes the C sources in `design/playlist/` first copies the previous stage's
-  sources into `design/playlist/stageN/` (stage 18, 20, 21, 23) and points that stage's builder at the copy.
-- **Code hashes.** Builders 20, 21 and 23 hash the code they place (bank address plus bytes, in bank order) and stop
-  if the frozen sources no longer give the hash recorded in `CODE_SHA`. Their host test is skipped for frozen
-  sources ("not run here").
+  sources into `design/playlist/stageN/` (stage 18, 20, 21, 23, 24) and points that stage's builder at the copy.
+- **Code hashes.** Builders 20, 21, 23 and 24 hash the code they place (bank address plus bytes, in bank order;
+  stage 24 also each program's `list_box`, `LIST_BOX_SHA`) and stop if the frozen sources no longer give the hash
+  recorded in `CODE_SHA`. Their host test is skipped for frozen sources ("not run here"). Stage 25's code holds the
+  theme's colours, so it differs per theme and has no recorded hash; its sources are the live ones.
 
 `music_headbar.S` stays as stage 14 wrote it; stage 24's changed status-bar routine is a new file
 (`headbar_soon.S`) for the same reason.
@@ -74,6 +75,9 @@ The images are deterministic. Two things keep them so when code changes:
 | `build_stage24.place_menu_boxes(ap, name, work)` | put `menu_box.S` at the end of every bank with a list box call, re-aim the calls, run `check_menu_box.py` per bank |
 | `build_stage24.bank_entry(ap, addr)`, `put_tail(...)` | a bank's table entry and the room its slot and group allow; link one function at the end of a bank |
 | `build_stage24.status_marks(com)` | the status bar's marks with their black border, stored in picture 240 |
+| `build_stage25.option_menus(lfi)` | the music lists' option lists with a "Search" row, laid out anew in the room of lists 21 to 40 |
+| `build_stage25.menu_box_banks(ap, stock)`, `replace_code(lfi, work, stock_ap)` | the banks whose ends hold stage 24's `menu_box`; the playlist code out of its banks and placed anew, those banks and `list_box` kept and checked unchanged |
+| `design/playlist/host/render.py` | pictures of the search screen from the host test's draw log (`SEARCH_SCREENS`) |
 
 ## Outputs
 

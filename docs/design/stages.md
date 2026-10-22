@@ -30,6 +30,7 @@ code. The {doc}`../project/history` page lists what went onto the player and whe
 | 22 | "Searching..." screen; status bar at once everywhere; track counter digits; card marks; screensaver date | `PLAYLIST.STY`, 14 programs, `COMMON.STY`, `MUSIC.STY` | yes |
 | 23 | the picker's page of five; Previous with the screen off | `MUSIC.AP` | yes |
 | 24 | the lists' top line: menu names, list names, counter only in an album or playlist; short menu texts; status bar right after a list, its marks without a blink | `COMMON.STY`, five programs, ten style files, `MUSIC.MCG`, `SETTING.MCG`, 15 programs | yes |
+| 25 | Search with a T9 keypad in the options of the music lists | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
 
 ## Stage notes
 
@@ -74,3 +75,16 @@ drawn with the bar on (0x6000, 0x6002 to 0x6005) paint their background from row
 first (`list_box`, `menu_box.S` at the end of every bank with a list box call, the playlist picker); the battery,
 card and Bluetooth marks got a black border out to the bar's edges, so the bar repaints rows 0 to 15 and the marks
 no longer go out while a list is drawn.
+
+**25: search.** Menu → Search in Playlists, All songs, Artists, Albums and Genres, at any level, opens a phone keypad
+over that level's rows (`search.c`): one key per letter, as T9 did; a row matches when the keys spell the beginning of
+one of its words. The query line shows the letters the first match spells and the number of matches, four result
+lines below it, the keypad at the bottom. A chosen row opens as Select opens it, or plays, and the list stands on it
+afterwards. The option lists got a "Search" row (text 44, icon 107, a stock routine that returns 0x8606) and were laid
+out anew in the room of the built-in playlists' options.
+
+```{figure} ../../design/stage25-preview.png
+:alt: The search screen in Berry: empty; 2-3-2 typed, spelling "Bea" with three artists; a result chosen; back on the keypad below the results; songs
+The search screen as the host test draws it (Berry, `design/playlist/host/render.py`; the status bar's marks are
+the firmware's and not drawn here).
+```

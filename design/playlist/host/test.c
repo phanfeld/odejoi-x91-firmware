@@ -11,6 +11,7 @@
 #include <strings.h>
 #include "../fw.h"
 #include "../library.h"
+#include "../search.h"
 #include "mock.h"
 
 static int failures;
@@ -1076,6 +1077,381 @@ static void test_list_style(void)
     memcpy(path, keep, sizeof keep);
 }
 
+/* ------------------------------------------------------------------ the search (stage 25) */
+
+#define PRESS(k) RAW_KEY(k, KT_DOWN), RAW_KEY(k, KT_SHORT_UP)
+#define PLAY_KEY RAW_KEY(KEY_PLAY, KT_DOWN), RAW_KEY(KEY_PLAY, KT_SHORT_UP)
+#define BACK_KEY RAW_KEY(KEY_RETURN, KT_DOWN), RAW_KEY(KEY_RETURN, KT_SHORT_UP)
+#define HELD_BACK RAW_KEY(KEY_RETURN, KT_DOWN), RAW_KEY(KEY_RETURN, KT_LONG), RAW_KEY(KEY_RETURN, KT_HOLD), \
+                  RAW_KEY(KEY_RETURN, 0x0200)
+#define Y_RESULT(i) (32 + 16 * (i))
+#define Y_KEY(row) (95 + 16 * (row))      /* a key row's text: one above its cell */
+#define TITLE_TEXT_X 22
+
+/* UTF-8 source text as UTF-16 with FF FE (code points up to U+FFFF) */
+static int to_utf16(u8 *out, const char *s)
+{
+    const u8 *p = (const u8 *)s;
+    int n = 2;
+    u32 c;
+    out[0] = 0xff;
+    out[1] = 0xfe;
+    while (*p) {
+        c = *p++;
+        if (c >= 0xe0) {
+            c = (c & 0x0f) << 12 | (p[0] & 0x3f) << 6 | (p[1] & 0x3f);
+            p += 2;
+        } else if (c >= 0xc0) {
+            c = (c & 0x1f) << 6 | (p[0] & 0x3f);
+            p++;
+        }
+        out[n++] = (u8)c;
+        out[n++] = (u8)(c >> 8);
+    }
+    return n;
+}
+
+static void add_row(const char *s, int wide)            /* wide: as UTF-16, else the bytes as they are */
+{
+    struct name_row *r = &name_rows[name_count++];
+    memset(r, 0, sizeof *r);
+    if (wide) {
+        r->n = to_utf16(r->b, s);
+    } else {
+        r->n = (int)strlen(s);
+        memcpy(r->b, s, (size_t)r->n);
+    }
+}
+
+/* the level the search runs on: the browser's state and the list control's, standing on row `at` */
+static void level_of_names(int dirs, int menus, int at)
+{
+    browse_mode = BROWSE_NAMES;
+    name_dirs = dirs;
+    level.dir_total = (u16)dirs;
+    level.file_total = (u16)(name_count - dirs);
+    level.layer_no = 0;
+    menu_count = menus;
+    memset(&dirctl, 0, sizeof dirctl);
+    dirctl.page = 6;
+    dirctl.total = (u16)(name_count + menus);
+    dirctl.list_no = (u16)at;
+    dirctl.top = (u16)(at > 3 ? at - 3 : 1);
+    dirctl.bottom = (u16)(dirctl.top + 5 < dirctl.total ? dirctl.top + 5 : dirctl.total);
+    dirctl.active = dirctl.old = (u16)(at - dirctl.top + 1);
+    screen_reset();
+    raw_keys = 1;
+    selects = stock_calls = 0;
+    last_stock_check = last_stock_active = 0;
+}
+
+static void keyseq(int n, const int *k)
+{
+    memcpy(events, k, sizeof(int) * (size_t)n);
+    event_count = n;
+    event_next = 0;
+}
+#define KEYSEQ(...) do { static const int k_[] = {__VA_ARGS__}; keyseq((int)(sizeof k_ / sizeof k_[0]), k_); } while (0)
+
+/* whether the keys spell the name, and the letters they spell (non-ASCII as '?') */
+static int spelled_as(const char *name, int wide, const char *keys, const char *want)
+{
+    u8 b[64], q[24];
+    u16 pred[26];
+    char got[32];
+    int i, n = 0;
+
+    memset(b, 0, sizeof b);
+    if (wide)
+        to_utf16(b, name);
+    else
+        memcpy(b, name, strlen(name));
+    for (i = 0; keys[i]; i++)
+        q[n++] = (u8)(keys[i] - '0');
+    if (!search_matches(b, q, n, pred))
+        return !want;
+    for (i = 0; pred[1 + i] && i < 31; i++)
+        got[i] = pred[1 + i] < 0x80 ? (char)pred[1 + i] : '?';
+    got[i] = 0;
+    if (pred[0] != 0xfeff || !want || strcmp(got, want))
+        printf("  \"%s\" with %s spells \"%s\"\n", name, keys, got);
+    return want && pred[0] == 0xfeff && !strcmp(got, want);
+}
+
+static void test_matching(void)
+{
+    static const struct { const char *name; int wide; const char *keys, *want; } cases[] = {
+        {"The Beatles", 0, "2328", "Beat"},              /* the beginning of any word */
+        {"The Beatles", 0, "843", "The"},
+        {"The Beatles", 0, "843232", "The Bea"},         /* on across the space */
+        {"The Beatles", 0, "3", NULL},                   /* not inside a word */
+        {"The Beatles", 0, "2328537", "Beatles"},
+        {"The Beatles", 0, "23285378", NULL},            /* not beyond the name */
+        {"ABBA", 0, "2222", "ABBA"},                     /* letter case */
+        {"AC/DC", 0, "2232", "AC/DC"},                   /* signs are skipped */
+        {"AC/DC", 0, "32", "DC"},
+        {"Guns N' Roses", 0, "6", "N"},
+        {"Florence + the Machine", 0, "843622", "the Mac"},
+        {"01 - Song", 0, "01", "01"},                    /* digits are their own keys */
+        {"01 - Song", 0, "7664", "Song"},
+        {"Mot\xf6rhead", 0, "6686", "Mot?"},             /* code page 1252 */
+        {"\x8aipka", 0, "7475", "?ipk"},                 /* 1252's own letters (S with caron) */
+        {"A\xd7" "B", 0, "22", "A?B"},                   /* the multiplication sign is no letter */
+        {"Bj\xc3\xb6rk", 1, "2567", "Bj?r"},             /* UTF-16 */
+        {"\xc5\x81\xc3\xb3" "d\xc5\xba", 1, "5639", "??d?"},   /* Latin Extended-A: L with stroke, z with acute */
+        {"\xef\xbb\xbf" "Beyonc\xc3\xa9", 0, "2396623", "Beyonc?"},   /* UTF-8 with its mark */
+        {"\xe4\xb8\xad\xe6\x96\x87", 1, "2", NULL},      /* nothing to spell */
+        {"Sigur R\xc3\xb3s", 1, "767", "R?s"},
+        {"", 0, "2", NULL},
+    };
+    /* every accented letter's key, at each edge where the next letter of the block is on another key */
+    static const struct { u16 c; int key; } letters[] = {
+        {0xc5, 2}, {0xc6, 2}, {0xc7, 2}, {0xc8, 3}, {0xcb, 3}, {0xcc, 4}, {0xcf, 4}, {0xd0, 3}, {0xd1, 6}, {0xd2, 6},
+        {0xd6, 6}, {0xd7, -1}, {0xd8, 6}, {0xd9, 8}, {0xdc, 8}, {0xdd, 9}, {0xde, 8}, {0xdf, 7}, {0xe0, 2}, {0xe7, 2},
+        {0xf0, 3}, {0xf6, 6}, {0xf7, -1}, {0xf8, 6}, {0xfc, 8}, {0xfd, 9}, {0xfe, 8}, {0xff, 9},
+        {0x100, 2}, {0x10d, 2}, {0x10e, 3}, {0x11b, 3}, {0x11c, 4}, {0x133, 4}, {0x134, 5}, {0x142, 5}, {0x143, 6},
+        {0x153, 6}, {0x154, 7}, {0x161, 7}, {0x162, 8}, {0x173, 8}, {0x174, 9}, {0x17e, 9}, {0x17f, 7}, {0x180, -1},
+        {0xbf, -1}, {'@', -1}, {'[', -1}, {'`', -1}, {'{', -1},
+    };
+    unsigned i;
+    int k, hit;
+    u8 name[8], q[1];
+    u16 pred[26];
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        CHECK(spelled_as(cases[i].name, cases[i].wide, cases[i].keys, cases[i].want), "matching: \"%s\" with %s",
+              cases[i].name, cases[i].keys);
+    for (i = 0; i < sizeof letters / sizeof letters[0]; i++) {
+        memset(name, 0, sizeof name);
+        name[0] = 0xff;
+        name[1] = 0xfe;
+        name[2] = (u8)letters[i].c;
+        name[3] = (u8)(letters[i].c >> 8);
+        for (k = 0, hit = -1; k < 10; k++) {
+            q[0] = (u8)k;
+            if (search_matches(name, q, 1, pred))
+                hit = hit < 0 ? k : 99;
+        }
+        CHECK(hit == letters[i].key, "U+%04X is on key %d, not %d", letters[i].c, hit, letters[i].key);
+    }
+}
+
+/* the artists of the search tests, rows 1 to 11 */
+static void artists(void)
+{
+    static const char *a[] = {"ABBA", "AC/DC", "Adele", "Arctic Monkeys", "Bear's Den", "Beastie Boys", "The Beatles",
+                              "Bj\xc3\xb6rk", "Bon Iver", "Coldplay", "Daft Punk"};
+    unsigned i;
+    name_count = 0;
+    for (i = 0; i < sizeof a / sizeof a[0]; i++)
+        add_row(a[i], i == 7);
+}
+
+static void test_search_keys(void)
+{
+    u8 pi[128];
+    u32 r;
+    dirctl_t keep;
+    long on, off;
+
+    /* an artist: 2, 3, 2 finds Bear's Den, Beastie Boys and The Beatles; Down to the second, Play opens it */
+    artists();
+    level_of_names(11, 0, 2);
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    KEYSEQ(SNAP(1), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_SHORT_UP), PLAY_KEY, IDLE(50),
+           RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(50), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, IDLE(50),
+           SNAP(2), RAW_KEY(KEY_MENU, KT_SHORT_UP), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_HOLD), SNAP(3), IDLE(1),
+           RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 6, "artist: %#x, %d selects, row %d", r, selects, selected_row);
+    CHECK(dirctl.list_no == 6 && dirctl.top == 1 && dirctl.active == 6 && dirctl.bottom == 6, "artist: list at %d, top %d",
+          dirctl.list_no, dirctl.top);
+    CHECK(!strcmp(text_at(6, 16), "Bea") && !strcmp(text_at(80, 16), "2/3"), "query line \"%s\", count \"%s\"",
+          text_at(6, 16), text_at(80, 16));
+    CHECK(!strcmp(text_at(8, Y_RESULT(0)), "Bear's Den") && !strcmp(text_at(8, Y_RESULT(1)), "Beastie Boys")
+          && !strcmp(text_at(8, Y_RESULT(2)), "The Beatles") && !*text_at(8, Y_RESULT(3)),
+          "results: %s / %s / %s / %s", text_at(8, Y_RESULT(0)), text_at(8, Y_RESULT(1)), text_at(8, Y_RESULT(2)),
+          text_at(8, Y_RESULT(3)));
+    CHECK(!strcmp(text_at(TITLE_TEXT_X, 0), "Search") && !strcmp(text_at(43, Y_KEY(0)), "2")
+          && !strcmp(text_at(54, Y_KEY(0)), "abc") && !strcmp(text_at(85, Y_KEY(2)), "9")
+          && !strcmp(text_at(96, Y_KEY(2)), "wxyz") && !strcmp(text_at(1, Y_KEY(3)), "Del")
+          && !strcmp(text_at(43, Y_KEY(3)), "0") && !strcmp(text_at(85, Y_KEY(3)), "OK") && !strcmp(text_at(1, Y_KEY(0)), "1"),
+          "keypad: %s %s %s %s %s %s %s", text_at(43, Y_KEY(0)), text_at(54, Y_KEY(0)), text_at(85, Y_KEY(2)),
+          text_at(96, Y_KEY(2)), text_at(1, Y_KEY(3)), text_at(43, Y_KEY(3)), text_at(85, Y_KEY(3)));
+    CHECK(tag_while_drawing == 0x8e && *timer_tag() == 0x84, "timer tag %#x while drawing, %#x after", tag_while_drawing,
+          *timer_tag());
+    CHECK(pen == 0xffff, "the pen colour is not given back: %#x", pen);
+    /* rows read: all 11 for the first key, then only those that still matched (10, then 4), and 9 for the lines */
+    CHECK(items_rows <= 11 + 10 + 4 + 9, "%d rows read", items_rows);
+
+    /* the keypad: the chosen key filled in another colour than the others; Previous goes round its row, Up stops at
+       the top when nothing is found */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN),
+           IDLE(1), BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    on = fill_at(85 + 20, Y_KEY(0) + 8);                /* 3: the chosen one, in the middle of its key */
+    off = fill_at(43 + 20, Y_KEY(0) + 8);
+    CHECK(r == RESULT_REDRAW && selects == 0 && stock_calls == 0 && on != off && off == fill_at(1 + 20, Y_KEY(0) + 8)
+          && !strcmp(text_at(85, Y_KEY(0)), "3"), "keypad: %#x, fills %#lx %#lx", r, on, off);
+    CHECK(!*text_at(6, 16) && !*text_at(80, 16) && !*text_at(8, Y_RESULT(0)), "nothing typed: \"%s\" \"%s\" \"%s\"",
+          text_at(6, 16), text_at(80, 16), text_at(8, Y_RESULT(0)));
+
+    /* Return: one key back (all rows read again), held: all keys; then it leaves; the list did not move */
+    level_of_names(11, 0, 4);
+    keep = dirctl;
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(20), SNAP(5), BACK_KEY,
+           IDLE(20), SNAP(6), PLAY_KEY, HELD_BACK, IDLE(5), SNAP(7), BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 0 && !memcmp(&keep, &dirctl, sizeof keep), "Return: %#x, %d selects", r, selects);
+    CHECK(!*text_at(6, 16) && !*text_at(8, Y_RESULT(0)), "after a held Return: \"%s\" \"%s\"", text_at(6, 16),
+          text_at(8, Y_RESULT(0)));
+
+    /* after Return the shorter query finds again what the longer one had dropped: 2-3, Return, the 10th of 2 */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(20), BACK_KEY, IDLE(20),
+           PRESS(KEY_MENU), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 10 && !strcmp(text_at(80, 16), "10/10"),
+          "Return finds again: row %d, count %s", selected_row, text_at(80, 16));
+
+    /* the results lie above the keypad: Up from its top row goes to the first result, Down from the last one comes back
+       to the top row (to the key above where it was: 2 abc), so Play there types 2 again; Down on the bottom row stays */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD),
+           RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD),
+           RAW_KEY(KEY_DOWN, KT_DOWN), SNAP(9), PLAY_KEY, IDLE(20), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 2 && !strcmp(text_at(6, 16), "AB"),
+          "up and down between keypad and results: row %d, query \"%s\"", selected_row, text_at(6, 16));
+    /* in by OK (bottom right), out below the last result: onto the top row of that column, 3 def; 2-3 finds Adele */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, IDLE(20),
+           RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 3, "out below the results: row %d", selected_row);
+
+    /* no match */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, PLAY_KEY, PLAY_KEY, IDLE(30), SNAP(4),
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_MENU, KT_SHORT_UP), PLAY_KEY, IDLE(1), HELD_BACK, BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 0 && stock_calls == 0, "no match: %#x %d %d", r, selects, stock_calls);
+
+    /* the volume key: the pop-up, then the whole screen again; a system message ends the search with its result */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(0x0a, KT_DOWN), RAW_KEY(0x0a, KT_SHORT_UP), IDLE(1), APP(0x8104));
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == 0x8104 && volume_popups == 1 && !strcmp(text_at(TITLE_TEXT_X, 0), "Search") && *timer_tag() == 0x84,
+          "system message: %#x, %d pop-ups", r, volume_popups);
+}
+
+/* every row's place in a long list, the menu row on top, a song plays by the stock "Play" */
+static void test_search_songs(void)
+{
+    u8 pi[128];
+    char name[40];
+    int i, want = 0, first = 0;
+    u32 r;
+
+    name_count = 0;
+    for (i = 1; i <= 300; i++) {
+        snprintf(name, sizeof name, i % 7 ? "%02d - Track %d" : "%02d - Wonderwall %d", i % 100, i);
+        add_row(name, i % 2);
+        if (!(i % 7)) {
+            want++;
+            if (!first)
+                first = i;
+        }
+    }
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    /* "Repeat All Songs" on top; 9-6-6 finds the Wonderwalls (row 7, 14, ...): Down to the last but one, Play */
+    level_of_names(0, 1, 2);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN),
+           PLAY_KEY, PLAY_KEY, IDLE(400), RAW_KEY(KEY_RETURN, KT_DOWN),
+           RAW_KEY(KEY_RETURN, KT_SHORT_UP), PLAY_KEY, IDLE(400), PRESS(KEY_MENU), RAW_KEY(KEY_DOWN, KT_DOWN), SNAP(8),
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    i = (want - 2) * 7 + 7;                             /* the Wonderwall before the last */
+    CHECK(r == RESULT_PLAYING_START && stock_calls == 1 && last_stock_check == RESULT_PLAYING_START && !last_stock_m3u
+          && last_stock_active == (u32)i && selects == 0, "song: %#x, stock %d (%#x, row %u)", r, stock_calls,
+          last_stock_check, last_stock_active);
+    CHECK(dirctl.list_no == i + 1 && dirctl.top == i - 1 && dirctl.active == 3 && dirctl.bottom == i + 4 && dirctl.old == 3,
+          "song: list at %d, top %d, active %d, bottom %d", dirctl.list_no, dirctl.top, dirctl.active, dirctl.bottom);
+    CHECK(!strcmp(text_at(80, 16), "41/42") && want == 42, "song: count %s (%d)", text_at(80, 16), want);
+
+    /* typing while the search runs: the answer is the one of the whole query; the last rows of a list */
+    level_of_names(0, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(3), RAW_KEY(KEY_UP, KT_DOWN),
+           PLAY_KEY, IDLE(2), PLAY_KEY, RAW_KEY(KEY_DOWN, KT_DOWN), IDLE(400), PRESS(KEY_MENU),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_HOLD), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_active == 294 && dirctl.top == 292 && dirctl.list_no == 294
+          && dirctl.active == 3 && dirctl.bottom == 297 && !strcmp(text_at(80, 16), "42/42"),
+          "while searching: %#x row %u top %d, count %s", r, last_stock_active, dirctl.top, text_at(80, 16));
+
+    /* inside a playlist: its "Play" */
+    level_of_names(0, 0, 1);
+    pi[0] = FSEL_M3U;
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(400), PRESS(KEY_MENU), PLAY_KEY);
+    r = m3u_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_m3u && last_stock_active == (u32)first, "playlist: %#x %u", r,
+          last_stock_active);
+}
+
+/* a list longer than the search covers: the first 4000 rows */
+static void test_search_long(void)
+{
+    u8 pi[128];
+    char name[24];
+    int i;
+    u32 r;
+
+    name_count = 0;
+    for (i = 1; i <= 4100; i++) {
+        snprintf(name, sizeof name, "%s %d", i == 3999 || i == 4050 ? "Zebra" : "Song", i);
+        add_row(name, 0);
+    }
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    level_of_names(0, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY,             /* 9 3 2 7: "Zebr" */
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY,
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, IDLE(2000),
+           PRESS(KEY_MENU), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_active == 3999 && !strcmp(text_at(80, 16), "1/1"),
+          "long list: %#x row %u, count %s", r, last_stock_active, text_at(80, 16));
+}
+
+static void test_search(void)
+{
+    const char *log = getenv("SEARCH_SCREENS");
+    if (log)
+        draw_log = fopen(log, "w");
+    test_matching();
+    test_search_keys();
+    test_search_songs();
+    test_search_long();
+    if (draw_log)
+        fclose(draw_log);
+    draw_log = NULL;
+    raw_keys = 0;
+    browse_mode = BROWSE_SONGS;
+    screen_reset();
+}
+
 int main(int argc, char **argv)
 {
     test_add();
@@ -1084,6 +1460,7 @@ int main(int argc, char **argv)
     test_song_lists();
     test_playlists();
     test_list_style();
+    test_search();
     test_real_library(argc > 1 ? argv[1] : "../../../x91_dump/device_files/2026-10-21/M3U.LIB");
     CHECK(refused_opens == 0, "%d files opened while another was open", refused_opens);
     printf("%s (%d failure%s)\n", failures ? "FAILED" : "all passed", failures, failures == 1 ? "" : "s");

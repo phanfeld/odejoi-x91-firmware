@@ -266,9 +266,125 @@ uptr vfs(uptr a, uptr b, uptr c, int cmd)
     exit(2);
 }
 
+/* ------------------------------------------------------------------ the screen the search draws (stage 25) */
+
+u32 pen = 0xffff, backgd;
+struct screen_text texts[MAX_TEXTS];
+int text_count, fills, strings, tag_while_drawing = -1;
+FILE *draw_log;
+static u32 filled[160][128];                            /* the colour each pixel was last filled with */
+
+/* a string as the driver gets it, as plain text: UTF-16 (FF FE) and UTF-8 (EF BB BF) beyond ASCII as '?', and the
+   ellipsis U+2026 as "~" */
+static void as_plain(char *out, int room, const strdesc_t *d)
+{
+    const u8 *t = (const u8 *)d->str;
+    int i = 0, n = 0;
+    if (t[0] == 0xff && t[1] == 0xfe) {
+        for (i = 2; i + 1 < d->length && (t[i] || t[i + 1]) && n < room - 1; i += 2)
+            out[n++] = t[i + 1] ? (t[i] == 0x26 && t[i + 1] == 0x20 ? '~' : '?') : (char)t[i];
+    } else {
+        for (i = t[0] == 0xef && t[1] == 0xbb && t[2] == 0xbf ? 3 : 0; i < d->length && t[i] && n < room - 1; i++)
+            out[n++] = t[i] < 0x80 ? (char)t[i] : '?';
+    }
+    out[n] = 0;
+}
+
+/* A fill covers what was drawn there: a text whose left edge it covers, and the rows of the glyphs (rows 4 to 15 of
+   the 16-row cell: ascenders from row 4, descenders down to row 15). */
+static void forget_texts(int x, int y, int w, int h)
+{
+    int i, k = 0;
+    for (i = 0; i < text_count; i++)
+        if (!(texts[i].x >= x && texts[i].x < x + w && texts[i].y + 4 < y + h && texts[i].y + 16 > y))
+            texts[k++] = texts[i];
+    text_count = k;
+}
+
+static void search_draw(uptr a, uptr b, uptr c, int cmd)
+{
+    if (cmd == UI_DC_GET) {
+        ((u32 *)a)[0] = pen;
+        ((u32 *)a)[1] = backgd;
+    } else if (cmd == UI_PEN) {
+        pen = (u32)a;
+    } else if (cmd == UI_BACKGD) {
+        backgd = (u32)a;
+    } else if (cmd == UI_CLEAR) {
+        const region_t *r = (const region_t *)a;
+        if (!r || r->x + r->w > 128 || r->y + r->h > 160 || !r->w || !r->h)
+            fprintf(stderr, "a fill outside the screen\n"), exit(2);
+        fills++;
+        forget_texts(r->x, r->y, r->w, r->h);
+        for (int y = r->y; y < r->y + r->h; y++)
+            for (int x = r->x; x < r->x + r->w; x++)
+                filled[y][x] = backgd;
+        if (draw_log)
+            fprintf(draw_log, "fill %d %d %d %d %#x\n", r->x, r->y, r->w, r->h, backgd);
+    } else if (cmd == UI_STRING) {
+        const strdesc_t *d = (const strdesc_t *)a;
+        const region_t *r = (const region_t *)b;
+        const u8 *t = (const u8 *)d->str;
+        int i;
+        if (tag_while_drawing < 0)
+            tag_while_drawing = *timer_tag();
+        if ((c & 3) != DRAW_DOTS || !(c & NO_ARABIC) || r->h != 16 || r->x + r->w > 131 || d->length > 200
+            || (d->lang == TEXT_UTF16) != (t[0] == 0xff && t[1] == 0xfe))
+            fprintf(stderr, "a string drawn with mode %#x in %d,%d %dx%d\n", (unsigned)c, r->x, r->y, r->w, r->h), exit(2);
+        strings++;
+        for (i = 0; i < text_count && (texts[i].x != r->x || texts[i].y != r->y); i++)
+            ;
+        if (i == text_count && text_count < MAX_TEXTS)
+            text_count++;
+        if (i < MAX_TEXTS) {
+            texts[i].x = r->x;
+            texts[i].y = r->y;
+            texts[i].w = r->w;
+            texts[i].colour = pen;
+            texts[i].mode = (u32)c;
+            as_plain(texts[i].s, sizeof texts[i].s, d);
+        }
+        if (draw_log) {
+            fprintf(draw_log, "text %d %d %d %d %#x %#x %d ", r->x, r->y, r->w, r->h, pen, (unsigned)c, d->lang);
+            for (i = 0; i < d->length && (t[i] || (d->lang == TEXT_UTF16 && i + 1 < d->length && t[i + 1])); i += d->lang == TEXT_UTF16 ? 2 : 1)
+                fprintf(draw_log, d->lang == TEXT_UTF16 ? "%02x%02x" : "%02x", t[i], d->lang == TEXT_UTF16 ? t[i + 1] : 0);
+            fprintf(draw_log, "\n");
+        }
+    }
+}
+
+/* the text drawn with its left edge at x in the line starting at y ("" if none) */
+const char *text_at(int x, int y)
+{
+    int i;
+    for (i = 0; i < text_count; i++)
+        if (texts[i].x == x && texts[i].y == y)
+            return texts[i].s;
+    return "";
+}
+
+/* the colour the pixel at x, y was last filled with */
+long fill_at(int x, int y) { return (long)filled[y][x]; }
+
+/* the colour the text at x, y was drawn in, or -1 */
+long colour_at(int x, int y)
+{
+    int i;
+    for (i = 0; i < text_count; i++)
+        if (texts[i].x == x && texts[i].y == y)
+            return (long)texts[i].colour;
+    return -1;
+}
+
 uptr ui(uptr a, uptr b, uptr c, int cmd)
 {
+    if (cmd >= UI_DC_GET && cmd <= UI_STRING) {
+        search_draw(a, b, c, cmd);
+        return 1;
+    }
     if (cmd == UI_PICTURE) {
+        if (draw_log)
+            fprintf(draw_log, "picture %#x %d %d\n", (unsigned)a, (int)b, (int)c);
         bar_clears++;
         last_clear_pic = (int)a;
         last_clear_x = (int)b;
@@ -323,20 +439,86 @@ uptr ui(uptr a, uptr b, uptr c, int cmd)
 
 void delay_tick(void) {}
 
+/* The key queue holds menu events (the menu key table's), or for the search raw key messages (RAW_KEY), stretches
+   with no message (IDLE: the search goes on in them), and marks for the draw log (SNAP). */
+int raw_keys, idle_left, volume_popups, app_result;
+static int app_pending;
+
 int get_gui_msg(void *msg)
 {
+    u8 *m = msg;
+    int e;
+
+    if (idle_left > 0) {
+        idle_left--;
+        return 0;
+    }
     if (event_next >= event_count) {                       /* nothing left: leave the list */
+        if (raw_keys)
+            fprintf(stderr, "the search ran out of keys\n"), exit(2);
         *(int *)msg = EV_BACK;
         return 1;
     }
-    *(int *)msg = events[event_next++];
+    e = events[event_next++];
+    if (e & SNAP_EVENT) {
+        if (draw_log)
+            fprintf(draw_log, "snapshot %d\n", e & 0xffff);
+        return get_gui_msg(msg);
+    }
+    if (e & APP_EVENT) {                                   /* a system message comes instead */
+        app_pending = 1;
+        app_result = e & 0xffff;
+        return 0;
+    }
+    if (e & IDLE_EVENT) {
+        idle_left = (e & 0xffffff) - 1;
+        return 0;
+    }
+    if (e & RAW_EVENT) {
+        memset(m, 0, 8);
+        m[2] = (u8)(e >> 16);
+        m[4] = (u8)e;
+        m[5] = (u8)(e >> 8);
+        return 1;
+    }
+    *(int *)msg = e;
     return 1;
 }
 
-int get_app_msg(void *msg) { (void)msg; return 0; }
-u32 app_dispatch(void *msg) { (void)msg; return 0; }
-int key_mapping(void *msg, u16 *event) { *event = (u16)*(int *)msg; return 1; }
-u32 message_box(u32 event) { (void)event; return 0; }
+int get_app_msg(void *msg)
+{
+    (void)msg;
+    if (!app_pending)
+        return 0;
+    app_pending = 0;
+    return 1;
+}
+
+u32 app_dispatch(void *msg) { (void)msg; return (u32)app_result; }
+
+int key_mapping(void *msg, u16 *event)
+{
+    const u8 *m = msg;
+    if (raw_keys) {                                        /* the volume key, as the common key table has it */
+        if (m[2] == 0x0a && (m[4] | m[5] << 8) & KT_SHORT_UP) {
+            *event = 0x2801;
+            return 1;
+        }
+        return 0;
+    }
+    *event = (u16)*(int *)msg;
+    return 1;
+}
+
+u32 message_box(u32 event)
+{
+    if (event == 0x2801) {                                 /* the volume pop-up, drawn over the screen */
+        volume_popups++;
+        text_count = 0;
+        return RESULT_REDRAW;
+    }
+    return 0;
+}
 
 /* a text as one-byte text, whatever its encoding (UTF-16 with FF FE, else bytes) */
 static void plain(char *out, int room, const u8 *t)
@@ -480,6 +662,10 @@ int browser_enter_dir(int type, int list_no, dir_brow_t *b)
         b->file_total = (u16)(m3u_cur != 0xffff && d ? le16(d, 0xa2 + 2 * (u32)m3u_cur) : 0);
         b->layer_no = m3u_cur != 0xffff;
         b->file_total = (u16)(b->file_total + rows_extra);
+    } else if (browse_mode == BROWSE_NAMES) {
+        b->dir_total = (u16)name_dirs;
+        b->file_total = (u16)(name_count - name_dirs);
+        b->layer_no = 0;
     } else {
         if (type == BROW_SON && !album_level) {
             album_level = 1;
@@ -494,25 +680,52 @@ int browser_enter_dir(int type, int list_no, dir_brow_t *b)
     return 1;
 }
 
-int browser_get_items(brow_decode_t *dd, file_brow_t *f)
+/* BROWSE_NAMES (the search tests): one level of rows given by their names' bytes; rows 1 .. name_dirs have lists
+   below them */
+struct name_row name_rows[MAX_NAME_ROWS];
+int name_count, name_dirs, items_calls, items_rows;
+
+static void row_bytes(int row, u8 *out)                 /* out: 128 zero bytes */
 {
     const u8 *d = libdata();
-    u8 *out = (u8 *)f->name_buf;
-    int row = dd->top, s;
-    memset(out, 0, f->name_len);
-    if (browse_mode == BROWSE_M3U && m3u_cur == 0xffff && d) {
+    int s;
+    if (browse_mode == BROWSE_NAMES) {
+        if (row >= 1 && row <= name_count)
+            memcpy(out, name_rows[row - 1].b, (size_t)name_rows[row - 1].n);
+    } else if (browse_mode == BROWSE_M3U && m3u_cur == 0xffff && d) {
         u32 rec = le16(d, le16(d, 0x24) * 512 + 2 * (u32)(row - 1));
-        memcpy(out, d + 0x200 + rec * 256, 56 < f->name_len ? 56 : f->name_len);
+        memcpy(out, d + 0x200 + rec * 256, 56);
     } else if (browse_mode == BROWSE_M3U) {
         s = m3u_song(row);
         if (s >= 0)
-            snprintf((char *)out, f->name_len, "%s", (const char *)d + 0x68a00 + (u32)s * 256);
+            snprintf((char *)out, 128, "%s", (const char *)d + 0x68a00 + (u32)s * 256);
     } else if (!album_level) {
-        snprintf((char *)out, f->name_len, "%s", nodes[albums[row - 1]].name);
+        snprintf((char *)out, 128, "%s", nodes[albums[row - 1]].name);
     } else {
         s = album_song(album, row - 1);
         if (s >= 0)
-            snprintf((char *)out, f->name_len, "%s", nodes[s].name);
+            snprintf((char *)out, 128, "%s", nodes[s].name);
+    }
+}
+
+/* As the library's (MUSIC.AP 0x1c93100c): num rows from row top, each name cut to name_len - 2 bytes and ended by
+   two zeros. */
+int browser_get_items(brow_decode_t *dd, file_brow_t *f)
+{
+    u8 tmp[128];
+    int k, n;
+    if (!dd->num || !dd->top)
+        return 0;
+    items_calls++;
+    for (k = 0; k < dd->num; k++) {
+        if (f[k].name_len < 2 || f[k].name_len > 58)
+            fprintf(stderr, "a row's name buffer of %d bytes\n", f[k].name_len), exit(2);
+        memset(tmp, 0, sizeof tmp);
+        row_bytes(dd->top + k, tmp);
+        n = f[k].name_len - 2;
+        memcpy((u8 *)f[k].name_buf, tmp, (size_t)n);
+        ((u8 *)f[k].name_buf)[n] = ((u8 *)f[k].name_buf)[n + 1] = 0;
+        items_rows++;
     }
     return 1;
 }
@@ -576,5 +789,55 @@ int browser_scan(u8 *pi, dir_brow_t *b, int type)
 
 u8 *browse_path(void) { return path_info; }
 int m3u_list(void) { return m3u_cur; }
-u32 stock_list_result(u8 *pi, u32 check, u32 active) { (void)pi; (void)active; stock_calls++; return check; }
-u32 stock_m3u_result(u8 *pi, u32 check, u32 active) { (void)pi; (void)active; stock_calls++; return check; }
+u32 last_stock_check, last_stock_active, last_stock_m3u;
+u32 stock_list_result(u8 *pi, u32 check, u32 active)
+{
+    (void)pi;
+    stock_calls++;
+    last_stock_check = check;
+    last_stock_active = active;
+    last_stock_m3u = 0;
+    return check;
+}
+u32 stock_m3u_result(u8 *pi, u32 check, u32 active)
+{
+    (void)pi;
+    stock_calls++;
+    last_stock_check = check;
+    last_stock_active = active;
+    last_stock_m3u = 1;
+    return check;
+}
+
+/* ------------------------------------------------------------------ the list control (stage 25) */
+
+dirctl_t dirctl;
+int menu_count, selects, selected_row;
+static u8 tag = 0x84;                                   /* the list control's timer tag */
+
+dirctl_t *dir_control(void) { return &dirctl; }
+int menu_rows(void) { return menu_count; }
+u8 *timer_tag(void) { return &tag; }
+
+/* the control's Select: it reads the chosen row's line on the page, so the state has to agree with itself */
+u32 dir_select(u8 *pi, dirctl_t *dc)
+{
+    (void)pi;
+    if (dc != &dirctl || dc->active < 1 || dc->active > dc->page || dc->old != dc->active || dc->top < 1
+        || dc->list_no != dc->top + dc->active - 1 || dc->bottom < dc->list_no || dc->bottom > dc->total
+        || dc->bottom - dc->top + 1 > dc->page || dc->list_no <= menu_count)
+        fprintf(stderr, "Select with a list state that does not agree with itself\n"), exit(2);
+    selects++;
+    selected_row = dc->list_no - menu_count;
+    return 0;
+}
+
+/* a fresh screen for the next search test */
+void screen_reset(void)
+{
+    text_count = fills = strings = 0;
+    tag_while_drawing = -1;
+    clear_pending = 0;
+    idle_left = 0;
+    items_calls = items_rows = 0;
+}
