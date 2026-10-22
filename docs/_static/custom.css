@@ -1,0 +1,8 @@
+/* Wider content area, and tables that wrap instead of scrolling sideways (addresses, record layouts). */
+.wy-nav-content { max-width: 1100px; }
+.wy-table-responsive { overflow: visible; }
+.wy-table-responsive table { width: 100%; }
+.wy-table-responsive table td, .wy-table-responsive table th { white-space: normal; vertical-align: top; }
+.rst-content table.docutils td code, .rst-content table.docutils th code { white-space: normal; overflow-wrap: break-word; }
+.rst-content code.literal { font-size: 85%; }
+.rst-content img { border: 1px solid #e1e4e5; }
