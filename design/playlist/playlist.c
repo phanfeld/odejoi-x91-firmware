@@ -1,19 +1,29 @@
-/* "Add to playlist" writes the .m3u files themselves (Graphite stage 18).
+/* The playlist actions in the options of the playing screen (Graphite stages 18 and 20).
  *
- * In the options of the playing screen, "Add to playlist" opens a list of the .m3u files in the root folder, with
- * "New playlist" on top. Choosing a playlist appends the playing song's path to it in the form the sync writes
- * ("Music\Artist\Album\01 - Title.mp3", CR LF); "New playlist" creates "New playlist N.m3u" with the first free N.
- * A song that is in the playlist already is not added again. A message says what happened, in the player's
- * language (texts 11 and 12 of MUSIC.STY, 26 of COMMON.STY).
+ * "Add to playlist" opens a list of the .m3u files in the root folder with "New playlist" on top. Choosing a
+ * playlist appends the playing song's path to it in the form the sync writes ("Music\Artist\Album\01 - Title.mp3",
+ * CR LF); "New playlist" creates "New playlist N.m3u" with the first free N. A song that is in the playlist
+ * already is not added again.
  *
- * design/build_stage18.py puts this into free room at the end of code banks of MUSIC.AP. Code there has no
+ * "Remove from Playlist" (stage 20) opens the same list without "New playlist"; choosing a playlist takes every
+ * line with the playing song's path out of it. The file keeps its size: the lines behind move up, and the bytes
+ * left over become one comment line at the end ("#" and spaces), which readers of .m3u files skip. Such a line
+ * from an earlier removal is taken into the new one, so there is never more than one.
+ *
+ * Since stage 20 both also bring the playlist library M3U.LIB up to date (library.c), so the Playlists list shows
+ * the change without "Update list?". Messages in the player's language say what happened (MUSIC.STY texts 11,
+ * 12, 14 and 27, COMMON.STY 26 and 36).
+ *
+ * design/build_stage20.py puts this into free room at the end of code banks of MUSIC.AP. Code there has no
  * global or static data and no string constants (constant text is built in code) and calls no library. Its
  * buffers are on the stack (the program's task has about 3 KB): the RAM from 0x101000 on, where the menus keep
  * their scratch data, is also where code banks are loaded, so data put there does not survive a call into
- * another bank. While the playlist file is read and written, playback is paused: the storage is busy and the
- * engine would run dry (heard as a loud stutter on the first test of stage 18).
+ * another bank. While files are read and written, a playing song is paused and then resumed, as with the Play
+ * key; the engine reads the same storage.
  */
 #include "fw.h"
+#include "util.h"
+#include "library.h"
 
 #define ROWS        6
 #define ROW_CHARS   21                   /* a shown playlist name and its zero */
@@ -21,22 +31,11 @@
 #define MAX_DEPTH   9                    /* folder levels the file system supports */
 #define MAX_ENTRIES 4000                 /* a guard for walking a folder */
 #define NEW_MAX     99                   /* "New playlist 1" to "New playlist 99" */
+#define MAX_CUTS    8                    /* lines one removal takes out */
+#define BUF         128
 
-enum { ADDED, ALREADY, FAILED };
-enum { PICK_BACK = -1, PICK_PASS = -2 };
-
-static inline __attribute__((always_inline)) void set_bytes(void *p, int v, int n)
-{
-    u8 *b = p;
-    while (n-- > 0)
-        *b++ = (u8)v;
-}
-
-static inline __attribute__((always_inline)) u32 upper(u32 c)
-{
-    c &= 0xff;
-    return c >= 'a' && c <= 'z' ? c - 32 : c;
-}
+enum { ADDED, ALREADY, FAILED, REMOVED, ABSENT };
+enum { PICK_BACK = -1, PICK_PASS = -2, PICK_EMPTY = -3 };
 
 /* "New playlist" in one-byte text; returns its length */
 static int new_playlist_text(u8 *t)
@@ -116,7 +115,7 @@ static int song_path(u8 *line)
     u8 *loc = song_location();
     int end = LINE_MAX, depth = 0, n, k;
 
-    if (!vfs((uptr)(loc + 16), (uptr)(loc + 8), 1, VFS_OFFSET))
+    if (!vfs((uptr)(loc + LOC_LAYER), (uptr)(loc + LOC_CLUSTER), 1, VFS_OFFSET))
         return -1;
     for (;;) {
         if (end < 24)
@@ -166,27 +165,51 @@ static int find_playlist(int index, int *count)
     return 0;
 }
 
+/* Stops on "New playlist <number>.m3u" in the root folder; 0 if it is not there. */
+static int find_new(int number)
+{
+    u8 want[24], tmp[64] __attribute__((aligned(4)));
+    int type = DIR_HEAD, n, i, guard;
+
+    n = append_number(want, new_playlist_text(want), number);
+    vfs(CD_ROOT, 0, 0, VFS_CD);
+    for (guard = 0; guard < MAX_ENTRIES; guard++) {
+        u32 ext = (u32)vfs(type, 0, EXT_ALL_FILES, VFS_DIR);
+        if (!ext)
+            break;
+        type = DIR_NEXT;
+        if (!is_m3u(ext) || playlist_name(tmp, 64) != n)
+            continue;
+        for (i = 0; i < n && tmp[i] == want[i]; i++)
+            ;
+        if (i == n)
+            return 1;
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ the list */
 
-/* The names of list rows top .. top+5 (row 0 is "New playlist", row k the (k-1)-th playlist). */
-static void fill_rows(u8 rows[ROWS][ROW_CHARS], int top)
+/* The names of list rows top .. top+5. With extra = 1 row 0 is "New playlist" and row k the (k-1)-th playlist;
+ * with extra = 0 row k is the k-th playlist. */
+static void fill_rows(u8 rows[ROWS][ROW_CHARS], int top, int extra)
 {
     u8 tmp[96] __attribute__((aligned(4)));
     int r, i, k, type = DIR_HEAD, n = 0, guard;
 
     for (r = 0; r < ROWS; r++)
         rows[r][0] = 0;
-    if (top == 0)
+    if (top < extra)
         rows[0][new_playlist_text(rows[0])] = 0;
     vfs(CD_ROOT, 0, 0, VFS_CD);
-    for (guard = 0; guard < MAX_ENTRIES && n + 1 < top + ROWS; guard++) {
+    for (guard = 0; guard < MAX_ENTRIES && n + extra < top + ROWS; guard++) {
         u32 ext = (u32)vfs(type, 0, EXT_ALL_FILES, VFS_DIR);
         if (!ext)
             break;
         type = DIR_NEXT;
         if (!is_m3u(ext))
             continue;
-        r = ++n - top;                                  /* this playlist's row on the page */
+        r = n++ + extra - top;                          /* this playlist's row on the page */
         if (r < 0 || r >= ROWS)
             continue;
         k = playlist_name(tmp, 96);
@@ -199,7 +222,7 @@ static void fill_rows(u8 rows[ROWS][ROW_CHARS], int top)
 }
 
 /* Draws the list the way the stock menu does (shared code at 0x18661316). The names live only while drawing. */
-static void draw(int top, int sel, int total, int mode)
+static void draw(int top, int sel, int total, int mode, int extra)
 {
     u8 rows[ROWS][ROW_CHARS];
     listbox_t list, *box = &list;
@@ -212,15 +235,15 @@ static void draw(int top, int sel, int total, int mode)
     if (mode == LIST_DRAW_ALL)
         headbar_all();
     list_prepare(&st);
-    fill_rows(rows, top);
+    fill_rows(rows, top, extra);
     set_bytes(box, 0, sizeof *box);
-    box->title.str = S_ADD_TO_PLAYLIST;
+    box->title.str = extra ? S_ADD_TO_PLAYLIST : S_REMOVE_FROM;
     box->title.lang = TEXT_ID;
     for (r = 0; r < ROWS && top + r < total; r++) {
         box->items[r].str = (uptr)rows[r];
         box->items[r].lang = language();
         box->items[r].length = ROW_CHARS;
-        box->items[r].argv = top + r == 0 ? ICON_ADD : ICON_PLAYLIST;
+        box->items[r].argv = top + r < extra ? ICON_ADD : ICON_PLAYLIST;
     }
     box->head_id = box->head_act_id = 0xffff;
     box->valid = (u16)r;
@@ -236,9 +259,9 @@ static void draw(int top, int sel, int total, int mode)
 }
 
 /* Shows the list until a row is chosen (returns it), Back is pressed (PICK_BACK), or a system message asks to
- * leave (PICK_PASS, the result in *result). Keys go through the stock menu's key table; everything else is handled
- * the way the stock menu handles it. */
-static int pick(u32 *result)
+ * leave (PICK_PASS, the result in *result); PICK_EMPTY if there is nothing to show. Keys go through the stock
+ * menu's key table; everything else is handled the way the stock menu handles it. */
+static int pick(u32 *result, int extra)
 {
     u8 gui[8], app[24];
     u16 ev = 0;
@@ -246,10 +269,12 @@ static int pick(u32 *result)
     u32 r;
 
     find_playlist(-1, &count);
-    total = count + 1;
+    total = count + extra;
+    if (!total)
+        return PICK_EMPTY;
     for (;;) {
         if (mode) {
-            draw(top, sel, total, mode);
+            draw(top, sel, total, mode, extra);
             mode = 0;
         }
         if (get_gui_msg(gui)) {
@@ -288,7 +313,7 @@ static int pick(u32 *result)
     }
 }
 
-/* ------------------------------------------------------------------ writing */
+/* ------------------------------------------------------------------ adding */
 
 /* Creates "New playlist N.m3u" in the root with the first free N; the UTF-16 name is built in name[] (42 bytes).
  * Returns the open file, 0 if none could be made. */
@@ -321,19 +346,17 @@ static uptr create_new(u8 *name, int *number)
     return 0;
 }
 
-/* Appends the playing song to the index-th playlist (from 0), or to a new one when index < 0 (its number goes to
- * *number). The bytes of line[] in front of the path serve as buffer for reading the playlist. */
-static int append(int index, int *number)
+/* Appends the path at line[start .. LINE_MAX) to the index-th playlist (from 0), or to a new one when index < 0
+ * (its number goes to *number). The bytes of line[] in front of the path serve as buffer for reading the
+ * playlist. */
+static int append(int index, int *number, u8 *line, int start)
 {
-    u8 line[LINE_MAX + 2] __attribute__((aligned(4)));
-    int start, len, pos = 0, last = '\n';
+    int len = LINE_MAX - start, pos = 0, last = '\n';
     u32 size = 0, off, want, got, i;
     uptr h;
 
-    start = song_path(line);
     if (start < (index < 0 ? 44 : 16))
         return FAILED;
-    len = LINE_MAX - start;
     if (index < 0) {
         h = create_new(line, number);
     } else {
@@ -386,17 +409,200 @@ static int append(int index, int *number)
     return got ? ADDED : FAILED;
 }
 
-/* The name of list row choice for the message (row 0: "New playlist N"). */
-static void choice_name(u8 *name, int choice, int number)
+/* ------------------------------------------------------------------ removing */
+
+typedef struct {                         /* the line being read */
+    u32 start;                           /* where it starts in the file */
+    int match;                           /* characters equal to the path so far, -1 once it differs */
+    int pad;                             /* 0 while empty, 1 while "#" and spaces, -1 else */
+    int ended;                           /* a CR was seen */
+} scan_t;
+
+/* The line ends at end (behind its line end). Notes it as a cut if it is the song's line or a filler line, and
+ * returns 1 for the song's. */
+static int line_done(scan_t *s, u32 end, int len, u32 cut[][2], int *cuts)
+{
+    int song = s->match == len;
+
+    if ((song || s->pad == 1) && *cuts < MAX_CUTS) {
+        cut[*cuts][0] = s->start;
+        cut[*cuts][1] = end;
+        ++*cuts;
+    } else {
+        song = 0;
+    }
+    s->start = end;
+    s->match = s->pad = s->ended = 0;
+    return song;
+}
+
+/* Takes the lines with the path path[0 .. len) out of the index-th playlist (see the top of the file). */
+static int remove_line(int index, const u8 *path, int len)
+{
+    u8 buf[BUF] __attribute__((aligned(4)));
+    u32 cut[MAX_CUTS][2], size = 0, off, got, want, i, r, w, end, left, body;
+    int cuts = 0, songs = 0, k, last = '\n';
+    scan_t s;
+    uptr h;
+
+    if (!find_playlist(index, 0))
+        return FAILED;
+    h = vfs(0, OPEN_MODIFY, 0, VFS_OPEN);
+    if (!h)
+        return FAILED;
+    vfs((uptr)&size, h, 0, VFS_SIZE);
+    set_bytes(&s, 0, sizeof s);
+    for (off = 0; off < size; off += got) {
+        want = size - off < BUF ? size - off : BUF;
+        got = (u32)vfs((uptr)buf, want, h, VFS_READ);
+        if (!got || got > want)
+            break;
+        for (i = 0; i < got; i++) {
+            u32 c = buf[i];
+            if (c == '\n') {
+                songs += line_done(&s, off + i + 1, len, cut, &cuts);
+            } else if (c == '\r') {
+                s.ended = 1;
+            } else if (s.ended) {                       /* text behind a CR in the same line */
+                s.match = s.pad = -1;
+            } else {
+                s.match = s.match >= 0 && s.match < len && upper(c) == upper(path[s.match]) ? s.match + 1 : -1;
+                s.pad = s.pad == 0 ? (c == '#' ? 1 : -1) : s.pad == 1 && c == ' ' ? 1 : -1;
+            }
+        }
+    }
+    if (off != size || (size == 0 && vfs((uptr)buf, 1, h, VFS_READ)))
+        goto fail;                                      /* the size and the content disagree: leave the file alone */
+    if (s.start < size)                                 /* the last line has no line end */
+        songs += line_done(&s, size, len, cut, &cuts);
+    if (!songs) {
+        vfs(h, 0, 0, VFS_CLOSE);
+        return ABSENT;
+    }
+    w = cut[0][0];
+    if (w) {
+        vfs(w - 1, SEEK_FROM_SET, h, VFS_SEEK);
+        if ((u32)vfs((uptr)buf, 1, h, VFS_READ) != 1)
+            goto fail;
+        last = buf[0];
+    }
+    for (k = 0; k < cuts; k++) {                        /* what lies between the cuts moves up; w <= r */
+        end = k + 1 < cuts ? cut[k + 1][0] : size;
+        for (r = cut[k][1]; r < end; r += want, w += want) {
+            want = end - r < BUF ? end - r : BUF;
+            vfs(r, SEEK_FROM_SET, h, VFS_SEEK);
+            if ((u32)vfs((uptr)buf, want, h, VFS_READ) != want)
+                goto fail;
+            vfs(w, SEEK_FROM_SET, h, VFS_SEEK);
+            if ((u32)vfs((uptr)buf, want, h, VFS_WRITE) != want)
+                goto fail;
+            last = buf[want - 1];
+        }
+    }
+    left = size - w;                                    /* the bytes left over: a line end if the text before */
+    vfs(w, SEEK_FROM_SET, h, VFS_SEEK);                 /* lacks one, then "#", spaces and CR LF */
+    if (last != '\n' && left >= 2) {
+        buf[0] = '\r';
+        buf[1] = '\n';
+        if ((u32)vfs((uptr)buf, 2, h, VFS_WRITE) != 2)
+            goto fail;
+        left -= 2;
+    }
+    body = left >= 2 ? left - 2 : left;                 /* (one byte left: just the "#") */
+    for (i = 0; i < body; i += want) {
+        want = body - i < BUF ? body - i : BUF;
+        set_bytes(buf, ' ', BUF);
+        if (i == 0)
+            buf[0] = '#';
+        if ((u32)vfs((uptr)buf, want, h, VFS_WRITE) != want)
+            goto fail;
+    }
+    if (left >= 2) {
+        buf[0] = '\r';
+        buf[1] = '\n';
+        if ((u32)vfs((uptr)buf, 2, h, VFS_WRITE) != 2)
+            goto fail;
+    }
+    vfs(h, 0, 0, VFS_CLOSE);
+    return REMOVED;
+fail:
+    vfs(h, 0, 0, VFS_CLOSE);
+    return FAILED;
+}
+
+/* ------------------------------------------------------------------ the library */
+
+/* The last part of the path at line[start .. LINE_MAX): the song's file name. */
+static const u8 *file_name(const u8 *line, int start, int *n)
+{
+    int i = LINE_MAX;
+    while (i > start && line[i - 1] != '\\')
+        i--;
+    *n = LINE_MAX - i;
+    return line + i;
+}
+
+/* M3U.LIB after a song was added to the index-th playlist, or to "New playlist <number>" (index < 0) named
+ * name[]: the playlist is found by its directory entry; a new playlist gets a record. A playlist the library
+ * does not know otherwise is left to the next "Update list?". */
+static void library_add(int index, int number, const u8 *name, const u8 *line, int start)
+{
+    place_t m3u;
+    const u8 *file;
+    int list, n, k;
+    uptr h;
+
+    if (!(index >= 0 ? find_playlist(index, 0) : find_new(number)))
+        return;
+    vfs((uptr)m3u.layer, (uptr)&m3u.cluster, 0, VFS_OFFSET);
+    h = lib_open();
+    if (!h)
+        return;
+    list = lib_find_list(h, &m3u);
+    if (list < 0 && index < 0) {
+        for (k = 0; name[k]; k++)
+            ;
+        list = lib_add_list(h, &m3u, name, k);
+    }
+    if (list >= 0) {
+        file = file_name(line, start, &n);
+        lib_add_song(h, list, song_location(), file, n);
+    }
+    lib_close(h);
+}
+
+/* M3U.LIB after the playing song was taken out of the index-th playlist. */
+static void library_remove(int index)
+{
+    place_t m3u;
+    int list;
+    uptr h;
+
+    if (!find_playlist(index, 0))
+        return;
+    vfs((uptr)m3u.layer, (uptr)&m3u.cluster, 0, VFS_OFFSET);
+    h = lib_open();
+    if (!h)
+        return;
+    list = lib_find_list(h, &m3u);
+    if (list >= 0)
+        lib_remove_song(h, list, song_location());
+    lib_close(h);
+}
+
+/* ------------------------------------------------------------------ messages */
+
+/* The name of list row choice for the message (with extra = 1, row 0 is "New playlist N"). */
+static void choice_name(u8 *name, int choice, int number, int extra)
 {
     u8 tmp[96] __attribute__((aligned(4)));
     int i, n;
 
-    if (choice == 0) {
+    if (choice < extra) {
         name[append_number(name, new_playlist_text(name), number)] = 0;
         return;
     }
-    n = find_playlist(choice - 1, 0) ? playlist_name(tmp, 96) : 0;
+    n = find_playlist(choice - extra, 0) ? playlist_name(tmp, 96) : 0;
     if (n > ROW_CHARS - 1)
         n = ROW_CHARS - 1;
     for (i = 0; i < n; i++)
@@ -404,8 +610,9 @@ static void choice_name(u8 *name, int choice, int number)
     name[n] = 0;
 }
 
-/* "<title> added to <playlist>!" with the song's title from its tag, as the stock message does it. */
-static void report_added(u8 *name)
+/* "<title> added to <playlist>!" (text 12) or "Removed <title> from <playlist>!" (text 14), with the song's
+ * title from its tag, as the stock message does it. */
+static void report(u32 text, const u8 *name)
 {
     strdesc_t dest, src[2];
     dialog_t d;
@@ -429,7 +636,7 @@ static void report_added(u8 *name)
     dest.str = (uptr)temp_buffer();
     dest.lang = TEXT_UTF16;
     dest.length = 0x80;
-    dest.argv = S_ADDED;
+    dest.argv = (u16)text;
     string_format(&dest, src);
     set_bytes(&d, 0, sizeof d);
     d.type = 2;
@@ -438,38 +645,85 @@ static void report_added(u8 *name)
     dialog(0x8000, &d);
 }
 
-/* ------------------------------------------------------------------ the menu item */
+/* ------------------------------------------------------------------ the menu items */
+
+/* Pauses a playing song; returns whether it did. */
+static int pause_playing(void)
+{
+    if (engine_status() != PLAY_PLAYING)
+        return 0;
+    engine_pause();
+    return 1;
+}
 
 /* "Add to playlist" in the options of the playing screen (MUSIC.MCG lists 42 and 59). */
 u32 add_playing_to_playlist(void *title_action)
 {
-    u8 keep[84] __attribute__((aligned(4)));            /* where the file system stood: folder chain, entry */
+    u8 line[LINE_MAX + 2] __attribute__((aligned(4)));
+    place_t keep;                                       /* where the file system stood */
     u8 name[ROW_CHARS];
     u32 result = RESULT_REDRAW;
-    int choice, number = 0, status, playing;
+    int choice, number = 0, status, paused, start;
 
     (void)title_action;
-    vfs((uptr)keep, (uptr)(keep + 76), 0, VFS_OFFSET);
-    choice = pick(&result);
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 0, VFS_OFFSET);
+    choice = pick(&result, 1);
     if (choice < 0) {
-        vfs((uptr)keep, (uptr)(keep + 76), 1, VFS_OFFSET);
+        vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
         return choice == PICK_PASS ? result : RESULT_REDRAW;
     }
     refresh_path();
-    playing = engine_status();
-    playing = playing != 0 && playing != 3;
-    if (playing)
-        engine_pause();
-    status = append(choice - 1, &number);
-    if (playing)
-        engine_resume();
-    if (status == ADDED)
-        choice_name(name, choice, number);
-    vfs((uptr)keep, (uptr)(keep + 76), 1, VFS_OFFSET);
+    paused = pause_playing();
+    start = song_path(line);
+    status = start < 0 ? FAILED : append(choice - 1, &number, line, start);
     if (status == ADDED) {
-        report_added(name);
+        choice_name(name, choice, number, 1);
+        library_add(choice - 1, number, name, line, start);
+    }
+    if (paused)
+        engine_resume();
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+    if (status == ADDED) {
+        report(S_ADDED, name);
         return RESULT_TO_PLAYING;
     }
     dialog_text(0x8000, 2, status == ALREADY ? S_ALREADY_ADDED : S_OPEN_FAILED);
+    return RESULT_REDRAW;
+}
+
+/* "Remove from Playlist" in the options of the playing screen (MUSIC.MCG lists 42 and 59). */
+u32 remove_playing_from_playlist(void *title_action)
+{
+    u8 line[LINE_MAX + 2] __attribute__((aligned(4)));
+    place_t keep;
+    u8 name[ROW_CHARS];
+    u32 result = RESULT_REDRAW;
+    int choice, status, paused, start;
+
+    (void)title_action;
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 0, VFS_OFFSET);
+    choice = pick(&result, 0);
+    if (choice < 0) {
+        vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+        if (choice == PICK_EMPTY)
+            dialog_text(0x8000, 2, S_NO_PLAYLISTS);
+        return choice == PICK_PASS ? result : RESULT_REDRAW;
+    }
+    refresh_path();
+    paused = pause_playing();
+    start = song_path(line);
+    status = start < 0 ? FAILED : remove_line(choice, line + start, LINE_MAX - start);
+    if (status == REMOVED) {
+        library_remove(choice);
+        choice_name(name, choice, 0, 0);
+    }
+    if (paused)
+        engine_resume();
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+    if (status == REMOVED) {
+        report(S_REMOVED, name);
+        return RESULT_TO_PLAYING;
+    }
+    dialog_text(0x8000, 2, status == ABSENT ? S_NOT_IN_PLAYLIST : S_OPEN_FAILED);
     return RESULT_REDRAW;
 }
