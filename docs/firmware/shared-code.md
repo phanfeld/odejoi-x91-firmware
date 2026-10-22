@@ -23,7 +23,10 @@ not shown: bar background (off), program icon (off in this build; the SDK featur
 184), clock (1), battery (0x1001 = picture box 1 of `COMMON.STY`), one unused part, card mark (0x1002), Bluetooth
 mark (0x1003). Each part goes through driver function 37: its black pixels are replaced by the pixels of the bar's
 background picture at that place (the picture named when the bar was switched on; default 249, black, 160 x 20).
-The draw routine never paints the whole background, only the parts' rectangles.
+The draw routine never paints the whole background, only the parts' rectangles. The Bluetooth part is drawn even
+with Bluetooth off (frame 0, the empty picture 201). Since stage 24 the three marks are bordered pictures that reach
+the bar's edges: battery (108, 0) 20 x 16, card mark (0, 0) 17 x 16, Bluetooth (98, 0) 10 x 16; with the middle,
+x 17 to 97, they cover rows 0 to 15.
 
 **Clock.** The time is drawn only while the main menu is the running program (program 19): `hh:mm` digit by digit
 through function 39 (key 0x7bcf) with pictures 135 to 145 of `COMMON.STY`, at a position fixed in the code (stock
@@ -37,6 +40,11 @@ x=45, y=1; `MAINMENU.AP` 0x18c21c0e, x=22 since stage 15), plus picture box 4 fo
 - Menus and lists switch the bar on and then paint their full-screen background over it, so there the bar still came
   back with the timer. Stage 24 (`design/patches/headbar_soon.S`, the same 15 programs): "on" also moves the timer's
   next firing to "now", so the bar is drawn as soon as the program waits for keys.
+- The marks still went out for as long as a list took to draw. Since stage 24 the list styles drawn with the bar on
+  (0x6000, 0x6002 to 0x6005) paint their background from row 16, the code that draws them first clears the bar's
+  middle (picture 127 at (17, 0): `list_box`, `menu_box.S`, the playlist picker), and the bordered marks paint the
+  rest. Option menus (0x6006) and 0x6001 lists keep the whole-screen background: they are drawn without the bar.
+  `CONFIG.AP` is not modified, so its menus may keep the screen before's pixels in the bar's middle.
 
 ## App timers
 
@@ -84,6 +92,10 @@ Menus are the SDK's menu list code (bank 0x18641000 in each program). It reads t
 `.MCG`, puts the list's title text into the list title (`g_menu_title.str_id`) and the rows' texts and icons into the
 list data, and draws with the style it was given (0x6002 menus, 0x6004 sub-menus with a title line, 0x6006 option
 menus). For styles 0x6002 and 0x6004 it switches the status bar on before a full redraw (0x18641130).
+
+The list box is called from three shared banks, 0x18601000, 0x18621000 and 0x18641000 (in most programs at
+0x1860113c, 0x18621478 and 0x18641170), and from a few program banks. Since stage 24 every such call except the list
+control's goes to `menu_box` ({doc}`../code/patches`) at the end of its own bank.
 
 ## Key filter with the screen off
 

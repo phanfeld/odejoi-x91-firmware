@@ -71,6 +71,9 @@ The images are deterministic. Two things keep them so when code changes:
 | `build_stage23.old_code`, `old_targets` | the ranges of earlier new code, and checks that the calls into it are where expected |
 | `build_stage24.place_list_box(ap, name, work, counted, top)` | compile `liststyle.c` for one program and put it at the end of its list control bank |
 | `build_stage24.headbar_soon(lfi, work)` | put `headbar_soon.S` into every program with the stage 14 routine |
+| `build_stage24.place_menu_boxes(ap, name, work)` | put `menu_box.S` at the end of every bank with a list box call, re-aim the calls, run `check_menu_box.py` per bank |
+| `build_stage24.bank_entry(ap, addr)`, `put_tail(...)` | a bank's table entry and the room its slot and group allow; link one function at the end of a bank |
+| `build_stage24.status_marks(com)` | the status bar's marks with their black border, stored in picture 240 |
 
 ## Outputs
 

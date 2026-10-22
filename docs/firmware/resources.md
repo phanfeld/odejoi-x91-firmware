@@ -105,6 +105,9 @@ Record (28 bytes):
 | 23 | Lines per page (6; record 4 has 5) |
 | 24 | Parts shown: bit 0 the list, bit 1 the title, bit 2 the scroll bar, bit 3 the counter |
 
+Since stage 24 the styles drawn with the status bar on (0x6000, 0x6002 to 0x6005) have picture 126 at (0, 16) as
+background, the black picture 185 from row 16 down, so a full redraw leaves the bar alone.
+
 Title sub-record: x, y, w, h, text colour, attributes (bits 0-1 alignment: 0 left, 1 centre, 2 right; bits 2-3 font:
 0 small, 1 normal, 2 large). Drawn only on a full redraw, over what is on the screen.
 
@@ -155,14 +158,18 @@ to 12.
 | 0 to 124 | 14 x 14 icons for menu rows (the row's icon number is the picture) |
 | 113 to 124 | file-type icons of the folder view in two states (stage 6) |
 | 125 | the list counter's slash, 4 x 12 (stage 24; was an unused stock icon) |
+| 126 | list background below the status bar, 128 x 144, a view into picture 185 (stage 24; was an unused stock icon) |
+| 127 | black field for the status bar's middle, 81 x 16, a view into picture 185 (stage 24; was an unused stock icon) |
 | 135 to 145 | the main menu clock's digits and colon, 6 x 12, also the list counter's digits |
 | 147 to 157, 158 to 167, 168/169, 170, 171 + n | screensaver clock: date digits and dash, time digits, AM/PM, colon, background |
 | 185 | the shared black full-screen picture (list and volume backgrounds) |
-| 200 to 202 | Bluetooth mark: on, empty, connected |
-| 203 to 205 | card mark: card in, no card, card in use |
+| 188 to 193 | battery mark (picture box 1); 20 x 16 with a black border since stage 24 |
+| 200 to 202 | Bluetooth mark: on, empty, connected; 10 x 16 with a black border since stage 24 |
+| 203 to 205 | card mark: card in, no card, card in use; 17 x 16 with a black border since stage 24 |
 | 221 to 232 | screensaver animation frames, 56 x 80 (stage 7; were "demo" pictures) |
 | 233 | volume panel (stage 10) |
-| 234 to 240 | free, 128 x 160 each |
+| 234 to 239 | free, 128 x 160 each |
+| 240 | free, declared 128 x 134; its last 26 rows hold pictures 188 to 193 and 200 to 205 (stage 24) |
 | 247/321, 248/322 | battery notice panels and the marks drawn on them |
 | 249 | default status-bar background, 160 x 20 |
 | 250 | the list counter's background, 68 x 16 |
@@ -173,4 +180,5 @@ to 12.
 | 411/413 | AM/PM in the status bar (picture box 4) |
 
 Picture boxes 0 to 4 of `COMMON.STY` are the status bar's parts: program icon (switched off in this build), battery
-at (108, 2), card mark at (2, 3), Bluetooth mark at (98, 2), AM/PM.
+at (108, 0), card mark at (0, 0), Bluetooth mark at (98, 0), AM/PM. The marks were at (108, 2), (2, 3) and (98, 2);
+stage 24 bordered them out to the bar's edges ({doc}`shared-code`).

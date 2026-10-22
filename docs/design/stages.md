@@ -29,7 +29,7 @@ code. The {doc}`../project/history` page lists what went onto the player and whe
 | 21 | playlist editing in the lists (add, delete, move); volume curve | `MUSIC.*`, `MENGINE.AP` | yes |
 | 22 | "Searching..." screen; status bar at once everywhere; track counter digits; card marks; screensaver date | `PLAYLIST.STY`, 14 programs, `COMMON.STY`, `MUSIC.STY` | yes |
 | 23 | the picker's page of five; Previous with the screen off | `MUSIC.AP` | yes |
-| 24 | the lists' top line: menu names, list names, counter only in an album or playlist; short menu texts; status bar right after a list | `COMMON.STY`, five programs, ten style files, `MUSIC.MCG`, `SETTING.MCG`, 15 programs | yes |
+| 24 | the lists' top line: menu names, list names, counter only in an album or playlist; short menu texts; status bar right after a list, its marks without a blink | `COMMON.STY`, five programs, ten style files, `MUSIC.MCG`, `SETTING.MCG`, 15 programs | yes |
 
 ## Stage notes
 
@@ -69,4 +69,8 @@ items, among them the status bar at once in 14 more programs. 23: five rows per 
 **24: the lists' top line.** Menus lost the counter and show their name; menu texts that were wrong or too long got
 short English forms (title and row alike); file lists show the level's name, and the counter (in the
 track counter's digits) only inside one album, playlist or album folder (`liststyle.c`, compiled per program into
-five programs); the status bar is drawn right after a menu or list (`headbar_soon.S`, 15 programs).
+five programs); the status bar is drawn right after a menu or list (`headbar_soon.S`, 15 programs). Lists and menus
+drawn with the bar on (0x6000, 0x6002 to 0x6005) paint their background from row 16 and clear only the bar's middle
+first (`list_box`, `menu_box.S` at the end of every bank with a list box call, the playlist picker); the battery,
+card and Bluetooth marks got a black border out to the bar's edges, so the bar repaints rows 0 to 15 and the marks
+no longer go out while a list is drawn.

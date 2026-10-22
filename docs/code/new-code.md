@@ -16,6 +16,9 @@ four more programs), called from a few re-aimed `bl` instructions and menu rows.
 - **Pause around file work.** While files are read and written a playing song is paused (0x315) and resumed (0x316),
   as the Play key does; the engine reads the same storage.
 - **Pages as long as the list style.** The picker shows `ROWS` = 5 rows, the line count of list style 0x6004.
+- **The status bar's middle.** A list drawn with style 0x6004 or one of the file-list styles is drawn with the bar on
+  and its middle cleared first (`clear_bar` in `fw.h`) on a full redraw: since stage 24 these styles' background
+  starts below the bar.
 
 Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inline -ffreestanding -fno-builtin
 -nostdlib -fno-strict-aliasing -fno-tree-loop-distribute-patterns -ffunction-sections -fdata-sections -fno-common
@@ -31,7 +34,7 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
 | `library.h`, `library.c` | `M3U.LIB` kept up to date in place: open and check, find a playlist, add a playlist record, add and remove songs, delete a record, move a song; every write leaves a readable file | used by the others |
 | `browse.c` | the list options: "Add to playlist" in the song lists (a song, or every song of an album, artist or genre), "Delete" (a song in a playlist, or a playlist's file), "Move song" | `list_option`, `m3u_option` (the result-handler calls at 0x1816102e, 0x18161092) |
 | `keys.c` | the Previous key: after 3 s of a song restart it (engine seek 0x317 with break point 0 between pause and resume), else the previous song; with the screen off by the engine's own time | `previous_key` (0x180a13b6), `standby_previous` (0x18b41a6e) |
-| `liststyle.c` | the file lists' top line: the counter inside one album or playlist, else the level's name | `list_box` (0x18661380, in five programs) |
+| `liststyle.c` | the file lists' top line: the counter inside one album or playlist, else the level's name; on a full redraw it first clears the status bar's middle | `list_box` (0x18661380, in five programs) |
 | `host/` | `mock.c`, `mock.h`, `test.c`: the test on the computer | |
 | `stage18/`, `stage20/`, `stage21/`, `stage23/` | frozen copies of the sources as each stage shipped them | |
 
@@ -89,7 +92,8 @@ tails, in banks of the 0x1000 group (they run at 0x101000):
    routine addresses (`MUSIC.MCG`). Before that, `build_stage23.old_targets` checks that each of them leads into the
    old code.
 
-Stage 23's code: 12,406 bytes in 25 bank tails, deepest stack chain 956 bytes.
+Stage 23's code: 12,406 bytes in 25 bank tails, deepest stack chain 956 bytes. Stage 24 places it anew (12,418 bytes
+in 25 banks) and leaves out the banks that call the list box, whose ends hold `menu_box`.
 
 ## liststyle.c: code in a 0x1200 bank
 
@@ -107,7 +111,8 @@ and `PICTURE.AP`, with that program's addresses read from its copy of the list c
 It must compile to one section (`-fno-tree-switch-conversion` keeps the list-type choice from becoming a table in a
 data section), is linked at the end of the control's own bank (0x18661514), checked to fit both the bank's file
 slot and 0x3b8 (the group's largest stock bank), and the control's call at 0x18661380 is re-aimed at it. The music
-version is 164 bytes. A stage that takes the new code out of `MUSIC.AP` with `take_out_code` stops at this bank
+version is 160 of the 164 bytes free; it reads each field of the browser state once (`list_level()` returns a
+plain pointer for that reason). A stage that takes the new code out of `MUSIC.AP` with `take_out_code` stops at this bank
 (only 0x1000-group banks may be longer than stock): it sets the bank back to 0x314 first and calls `place_list_box`
 again afterwards.
 

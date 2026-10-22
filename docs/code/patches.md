@@ -33,6 +33,7 @@ program with that program's addresses.
 | `music_headbar.S` | 14, 22 | shared status-bar on/off routine (0x74 bytes), `MUSIC.AP` then 14 more programs | draw the bar at once when switched on | `check_headbar_patch.py`, 600 per program |
 | `ebook_reader.S` | 16 | `EBOOK.AP` 0x180e1000: 0x0dc to 0x18e, 0x48c to 0x50a, 0x3c0 to 0x406 | landscape page, bottom strip with progress bar | `check_ebook_patch.py`, 6400 |
 | `headbar_soon.S` | 24 | the same on/off routine in 15 programs | also move the bar timer's next firing to now | `check_headbar_soon.py`, 840 per program |
+| `menu_box.S` | 24 | new, 52 bytes at the end of every bank with a list box call other than the list control's (15 programs) | on a full redraw of style 0x6000 or 0x6002 to 0x6005 draw picture 127 at (17, 0) first, then the list box; both through the bank's own veneer, so no literal | `check_menu_box.py`, 112 per bank |
 
 Smaller code changes are made directly by the builders with `patch_bytes` (checked old bytes):
 
@@ -51,6 +52,7 @@ Smaller code changes are made directly by the builders with `patch_bytes` (check
 | 21 | `MENGINE.AP` 0x1a11189e | the volume table |
 | 23 | `MUSIC.AP` 0x18b41a6e | the screen-off Previous calls `standby_previous` |
 | 24 | 0x18661380 in five programs | the list control's list box call goes to `list_box` |
+| 24 | every other list box call, 15 programs | goes to `menu_box` at the end of its bank |
 
 ## thumb_sim.py
 
