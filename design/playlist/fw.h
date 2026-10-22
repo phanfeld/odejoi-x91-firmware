@@ -179,6 +179,8 @@ void engine_resume(void);
 void engine_seek(u32 *break_point);      /* 12 bytes: time in ms, file offset, extra */
 void previous_song(void);                /* what the Previous key does in the stock firmware */
 volatile u32 *elapsed_ms(void);          /* the playing screen's copy of the playing time */
+u32 engine_time(void);                   /* the engine's own playing time (ms) */
+int music_playing(void);                 /* the music engine runs in the background and plays */
 void engine_stop(void);
 int playing_source(void);                /* where the playing song was chosen: FSEL_M3U for a playlist */
 int browser_enter_dir(int type, int list_no, dir_brow_t *b);
@@ -247,6 +249,17 @@ static inline __attribute__((always_inline)) void engine_seek(u32 *bp) { FAR(0x1
 static inline __attribute__((always_inline)) void previous_song(void) { FAR(0x1102b5, u32 (*)(void))(); }
 static inline __attribute__((always_inline)) volatile u32 *elapsed_ms(void) { return (volatile u32 *)0x200030; }
 static inline __attribute__((always_inline)) void engine_stop(void) { FAR(0x11034d, u32 (*)(u32, u32, u32))(0, 0, 0x314); }
+/* The engine's playing time, from its own RAM: MENGINE.AP keeps it at 0x200914 (its main loop copies it from the
+   decoder, 0x1a0d1600; its RAM starts at 0x200800, the music program's ends below that). Message 0x32f would
+   copy it too, but also clears the "song changed" flags the playing screen reads, so the time is read directly.
+   The playing screen's own copy (elapsed_ms) is not updated while the screen is off. */
+static inline __attribute__((always_inline)) u32 engine_time(void) { return *(volatile u32 *)0x200914; }
+/* The two bytes of the shared state at 0x202fbc that the stock screen-off "previous" and "next" check (0x18da1cec):
+   the background engine is the music engine, and it plays. */
+static inline __attribute__((always_inline)) int music_playing(void)
+{
+    return ((volatile u8 *)0x202fbc)[1] == 1 && ((volatile u8 *)0x202fbc)[0] == 1;
+}
 static inline __attribute__((always_inline)) int playing_source(void) { return *(volatile u8 *)0x200324; }
 
 /* the browser (veneers in MUSIC.AP 0x18161422, 0x1816142c, 0x18161436, 0x1830150a, 0x182e11d0, 0x182e11da) */

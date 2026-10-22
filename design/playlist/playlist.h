@@ -3,7 +3,7 @@
 #define PLAYLIST_PLAYLIST_H
 #include "fw.h"
 
-#define ROWS        6
+#define ROWS        5                    /* rows on a page: the picker's list style (COMMON.STY list box 4) has 5 */
 #define ROW_CHARS   21                   /* a shown playlist name and its zero */
 #define LINE_MAX    192                  /* a song's path; room for the sync's longest names, see song_path_at */
 #define MAX_ENTRIES 4000                 /* a guard for walking a folder */
