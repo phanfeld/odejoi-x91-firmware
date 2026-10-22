@@ -47,6 +47,9 @@ vendor files are not part of this repository; outside sources and their versions
 
 ## Documentation
 
+Online at **https://phanfeld.github.io/odejoi-x91-firmware/**, rebuilt by GitHub Actions on every push to `main`
+that changes `docs/` (`.github/workflows/docs.yml`). To build it locally:
+
 ```bash
 make -C docs html
 ```

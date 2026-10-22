@@ -6,7 +6,10 @@ Sphinx project (Markdown through MyST, Read the Docs theme). Build from the repo
 make -C docs html
 ```
 
-The site is `docs/_build/html/index.html`. The Makefile uses Sphinx from `.venv-docs/`; set it up with:
+The site is `docs/_build/html/index.html`. GitHub Actions (`.github/workflows/docs.yml`) builds it on every pull
+request and publishes it to https://phanfeld.github.io/odejoi-x91-firmware/ on every push to `main`.
+
+The Makefile uses Sphinx from `.venv-docs/`; set it up with:
 
 ```bash
 python3 -m venv .venv-docs && .venv-docs/bin/pip install -r docs/requirements.txt
