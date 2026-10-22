@@ -62,6 +62,10 @@ A02 family).
 : Theme colours (`THEMES`), the icon set (`icon`), and the mock-up generator (`x91_design.py OUT_DIR`), which draws
   screens as SVG plus the texts the way the player draws them.
 
+`design/make_screens.py`
+: Renders the current screens of every theme from `x91_dump/themes/` into `design/screens/` (the pictures in these
+  pages); see {doc}`../design/index`.
+
 `design/make_board.py`
 : Builds the design board (`x91-design-board.svg` and an HTML page) from the mock-ups. Given an unpacked stock
   image it adds the stock main menu and font for comparison; those renders stay out of git.

@@ -9,7 +9,8 @@
 | `design/build_stageN.py` | One stage each; `build_theme.py` chains them for every theme |
 | `design/patches/` | Program patches (`.S`), their checkers and the Thumb interpreter `thumb_sim.py` |
 | `design/playlist/` | New program code in C, `fw.h`, the host test (`host/`) and frozen copies per stage |
-| `design/src/`, `design/mock/`, `design/*-preview.png` | SVG sources of the mock-ups, rendered mock-ups, previews of each stage |
+| `design/make_screens.py`, `design/screens/` | Renders of the current screens for the documentation |
+| `design/src/`, `design/mock/`, `design/*-preview.png` | SVG sources of the mock-ups, rendered mock-ups, previews made at each stage |
 | `firmware_analysis/tools/` | `x91_modify.py`, `x91_preview.py`, `ap_dis.py`, `drv_dis.py`, `lfi_verify.py`, `x91_cover.py`, `x91_playlist.py`, vendor package analysis scripts |
 | `actions_flash/` | Submodule: upstream `actions_flash`, the USB tool `actions_dump` and its ARM payloads |
 | `patches/` | Our changes to third-party code (the X91 page-size scan for `actions_dump`) |

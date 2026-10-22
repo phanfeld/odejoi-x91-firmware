@@ -7,11 +7,11 @@ new code written in C, and the tools that dump and flash the player.
 The player is a 1.8-inch button player on an Actions ATJ2157. Nothing here comes from vendor documentation;
 addresses and formats were read from the firmware itself, with a partial SDK of the predecessor chip as a guide.
 
-```{figure} ../design/themes-preview.png
-:alt: The Graphite design in its four accent colours
-:width: 640px
+```{figure} ../design/screens/berry.png
+:alt: Main menu, Music menu, a playlist, the playing screen and the screensaver in the Berry theme
+:width: 100%
 
-The Graphite design in the four accent colours (Amber, Mint, Ice, Berry).
+Graphite in Berry: main menu, Music menu, a playlist, the playing screen, the screensaver.
 ```
 
 ## Where to start

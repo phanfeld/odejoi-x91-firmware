@@ -4,7 +4,9 @@ Custom firmware for the ODEJOI X91 MP3 player (Actions ATJ2157). The stock firmw
 reverse-engineered; a new interface, **Graphite**, is built on top of it in stages (24 so far) by scripts that patch
 the stock image. A terminal tool dumps the firmware and flashes a theme.
 
-![Graphite in four accent colours](design/themes-preview.png)
+![Main menu, Music menu, a playlist, the playing screen and the screensaver in the Berry theme](design/screens/berry.png)
+
+![Main menu and playing screen in Amber, Mint, Ice and Berry](design/screens/themes.png)
 
 ## Quick start
 

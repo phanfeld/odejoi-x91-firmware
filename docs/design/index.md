@@ -6,11 +6,18 @@ restyled with data, and what it draws by code needed patches or new code.
 
 The stages that built it are listed in {doc}`stages`.
 
-```{figure} ../../design/x91-design-board.png
-:alt: The design board with the main screens
-:width: 720px
+```{figure} ../../design/screens/berry.png
+:alt: Main menu, Music menu, a playlist, the playing screen and the screensaver in the Berry theme
+:width: 100%
 
-The design board (`design/x91-design-board.svg`, made by `design/make_board.py`).
+Stage 24 in Berry: main menu, Music menu, a playlist with its counter, the playing screen, the screensaver.
+```
+
+```{figure} ../../design/screens/reader.png
+:alt: The eBook reader in landscape
+:width: 368px
+
+The eBook reader in landscape, on the paper page colour.
 ```
 
 ## Themes
@@ -24,6 +31,13 @@ builders take them from `build_stage1.T`, which follows the `X91_THEME` environm
 | Mint | `#0a0e0d` | `#161d1b` | `#202a27` | `#28332f` | `#f0f5f3` | `#869690` | `#35e0a1` | `#06110d` |
 | Ice | `#0a0c11` | `#161a23` | `#202634` | `#2a3040` | `#f1f4f9` | `#8a93a6` | `#5cb8ff` | `#07101a` |
 | Berry | `#0d0a0b` | `#1d171a` | `#2a2126` | `#342a2f` | `#f6f1f3` | `#9a8b91` | `#710630` | `#f6f1f3` |
+
+```{figure} ../../design/screens/themes.png
+:alt: Main menu and playing screen in Amber, Mint, Ice and Berry
+:width: 100%
+
+Main menu and playing screen in the four themes.
+```
 
 The builders use these colours with
 the background forced to pure black (`T = dict(THEMES[theme], bg="#000000")`, default theme Amber), so status bar,
@@ -47,30 +61,17 @@ lists and backgrounds are black in every theme; pictures are reduced to the pane
 - Mock-ups for decisions are in `design/mock/`; the generator is `design/x91_design.py`, which also draws the texts
   the way the player draws them (1-bit glyphs in one colour, reduced to 16-bit colour).
 
-## Previews
+## Screen renders
 
-Each stage that changed the look has a rendered preview in `design/`:
+`design/make_screens.py` renders the pictures on this page into `design/screens/` from each theme's latest build in
+`x91_dump/themes/`. It composes every screen the way the firmware draws it: pictures and layout records (list styles,
+number and time boxes, picture boxes) come from the image; the positions of what the firmware draws by code (status
+bar clock, progress bar, screensaver clock, reader page) come from the stage builders. Song names, the cover and the
+book text are samples. Run it again after a stage changes the look:
 
-```{figure} ../../design/stage11-preview.png
-:alt: Stage 11 preview: the playing screen
-:width: 520px
-
-Stage 11: the playing screen laid out after the mock.
+```bash
+python3 -I design/make_screens.py
 ```
 
-```{figure} ../../design/stage16-preview.png
-:alt: Stage 16 preview: the eBook reader in landscape
-:width: 520px
-
-Stage 16: the eBook reader in landscape.
-```
-
-```{figure} ../../design/stage7-screensaver.gif
-:alt: Stage 7: the screensaver animation
-:width: 128px
-
-Stage 7: the screensaver clock with its animation.
-```
-
-The offline previewer models picture boxes and text boxes only; screens the firmware draws by code (the clock, the
-progress bar, the volume page, lists) were composed by hand; only the player shows the real result.
+The `design/stageN-preview.png` files are the previews made while each stage was built; they show the design as it
+was then.
