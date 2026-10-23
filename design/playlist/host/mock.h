@@ -27,6 +27,39 @@ extern int list_test, bar_clears, last_clear_pic, last_clear_x, last_clear_y, cl
 extern char shown[6][64], last_message[256];
 extern int events[64], event_count, event_next;
 
+/* stage 25: the search's screen, its keys and the rows it searches */
+#include <stdio.h>
+#define MAX_TEXTS 48
+struct screen_text { int x, y, w; u32 colour, back, mode; char s[64]; };
+extern struct screen_text texts[MAX_TEXTS];
+extern int text_count, fills, strings, tag_while_drawing;
+extern u32 pen, backgd;
+extern FILE *draw_log;
+#define RAW_EVENT  0x40000000                           /* a key message: RAW_KEY(key, kind) */
+#define IDLE_EVENT 0x20000000                           /* IDLE(n): n times no message */
+#define SNAP_EVENT 0x10000000                           /* SNAP(n): a mark in the draw log */
+#define APP_EVENT  0x08000000                           /* APP(result): a system message the program answers so */
+#define RAW_KEY(key, kind) (RAW_EVENT | (key) << 16 | (kind))
+#define IDLE(n) (IDLE_EVENT | (n))
+#define SNAP(n) (SNAP_EVENT | (n))
+#define APP(r) (APP_EVENT | (r))
+extern int raw_keys, idle_left, volume_popups;
+extern void (*screen_check)(void);                      /* called when the search waits for a key after drawing */
+extern void (*on_snapshot)(int n);                      /* called at SNAP(n) */
+#define BROWSE_NAMES 2
+#define MAX_NAME_ROWS 4200
+struct name_row { u8 b[64]; int n; };
+extern struct name_row name_rows[MAX_NAME_ROWS];
+extern int name_count, name_dirs, items_calls, items_rows;
+extern u32 last_stock_check, last_stock_active, last_stock_m3u;
+extern dirctl_t dirctl;
+extern int menu_count, selects, selected_row;
+const char *text_at(int x, int y);
+long colour_at(int x, int y);
+long fill_at(int x, int y);
+long fill_only_at(int x, int y);
+void screen_reset(void);
+
 int add_node(int parent, const char *name, int is_dir, const char *data);
 void node_room(int node, u32 size);
 void reset_disk(void);

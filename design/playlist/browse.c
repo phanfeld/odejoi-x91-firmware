@@ -7,12 +7,16 @@
  * Playlists (the options of the .m3u lists, before lists 50 to 54, now 26 to 30, whose rows served the built-in
  * playlists): "Delete" on a playlist deletes its .m3u file after a question; on a song inside a playlist it takes
  * the song out of that playlist, also after a question. "Move song" shows the playlist's songs with that song
- * chosen: Previous and Next move it, Select leaves it there, Back keeps the order.
+ * chosen: Previous and Next move it, Select leaves it there, Back keeps the order. "Add songs" (stage 26), inside a
+ * playlist or on one in the list of playlists, finds songs of the library by the search's keypad; each one chosen
+ * goes to the end of that playlist, and the search comes back as it was for the next one.
  *
  * How it hooks in: the list option callback (MUSIC.AP 0x18161000) hands the result of the chosen option row, the
  * browser's path info and the list row the options were opened on to a result handler; build_stage21.py points
  * its two calls (0x1816102e, 0x18161092) to list_option and m3u_option, which pass everything they do not handle
- * to the stock handlers. The option rows are the stock ones of the built-in playlists and return their codes (add
+ * to the stock handlers; "Search" (stage 25, 0x8606 in both) goes on to search.c, "Add songs" (stage 26, 0x8607 in
+ * Playlists) to add_songs. The option rows are the stock ones
+ * of the built-in playlists and return their codes (add
  * 0x8605, remove 0x8608, clear 0x8609). After a removal the list is told so (RESULT_DELETE_FILE or
  * RESULT_DELETE_DIRLIST): it takes the row out and reads itself again (SDK ui_directory2.c,
  * directory_option_deal).
@@ -21,6 +25,7 @@
 #include "util.h"
 #include "library.h"
 #include "playlist.h"
+#include "search.h"
 
 #define NAME_UNITS 66                    /* a playlist file's name for removing it */
 
@@ -485,11 +490,111 @@ static u32 move_song(u8 *path_info, int active, int list)
     return RESULT_REDRAW;
 }
 
+/* ------------------------------------------------------------------ adding songs by the search (stage 26) */
+
+/* The playlist "Add songs" adds to: the one the list is in, or the one on list row `active` in the list of playlists;
+ * its record to *list and the index of its .m3u among the root's (or -1). The list's rows must agree with the
+ * library, as for the other options. */
+static int add_target(int active, int *list)
+{
+    place_t m3u;
+    int in = m3u_list(), rows = list_rows(0), l = -1, ok = 0;
+    uptr h = lib_open();
+
+    if (!h)
+        return -1;
+    if (in < LISTS_MAX)
+        l = rows == lib_count(h, in) ? in : -1;
+    else if (rows == lib_lists(h) && active >= 1 && active <= rows)
+        l = lib_order(h, active - 1);
+    ok = l >= 0 && lib_list(h, l, &m3u, 0);
+    lib_close(h);
+    *list = l;
+    return ok ? find_playlist_at(&m3u) : -1;
+}
+
+/* Row `row` of All songs to the index-th playlist: ADDED, ALREADY or FAILED. */
+static int add_found(int index, int row)
+{
+    u8 loc[LOC_LAYER + LAYER_SIZE + 3] __attribute__((aligned(4)));
+    place_t keep;
+    int status = FAILED, number = 0, paused;
+
+    if (!songs_get(row, loc, 1))
+        return FAILED;
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 0, VFS_OFFSET);
+    paused = pause_playing();
+    status = add_one(index, &number, loc);
+    if (paused)
+        engine_resume();
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+    return status;
+}
+
+/* "<song> added to <playlist>!", or why it was not. */
+static void add_said(int list, int row, int status)
+{
+    u8 title[ROW_NAME + 2] __attribute__((aligned(4)));
+    u16 wname[28];
+    int ok = 0;
+    uptr h;
+
+    if (status == ADDED) {
+        h = lib_open();
+        if (h) {
+            ok = lib_list(h, list, 0, wname);
+            lib_close(h);
+        }
+        if (ok && songs_get(row, title, 0))
+            say(S_ADDED, title, (const u8 *)wname, 0, 0);
+        return;
+    }
+    dialog_text(0x8000, 2, status == ALREADY ? S_ALREADY_ADDED : S_OPEN_FAILED);
+}
+
+/* The list's number of rows from the browser's level again, its place kept: after a "redraw" the list reads the rows
+ * of its page again but keeps its number of rows (the control recounts only when it enters a level, 0x187012bc, which
+ * also takes the place from the level's history), so songs added behind its end would not show. */
+static void list_grown(void)
+{
+    dirctl_t *dc = dir_control();
+    int total = list_rows(0) + menu_rows(), last = dc->top + dc->page - 1;
+
+    if (total <= dc->total)
+        return;
+    dc->total = (u16)total;
+    dc->bottom = (u16)(last < total ? last : total);
+}
+
+static u32 add_songs(int active)
+{
+    search_keep_t keep;
+    int list, index = add_target(active, &list), r, status, added = 0;
+
+    if (index < 0) {
+        dialog_text(0x8000, 2, S_OPEN_FAILED);
+        return RESULT_REDRAW;
+    }
+    set_bytes(&keep, 0, sizeof keep);
+    while ((r = search_songs(&keep)) == SONGS_CHOSEN) { /* the song is added after the screen's frame has gone */
+        status = add_found(index, keep.row);
+        added |= status == ADDED;
+        add_said(list, keep.row, status);
+    }
+    if (added)
+        list_grown();
+    if (r == SONGS_FAILED)
+        dialog_text(0x8000, 2, S_OPEN_FAILED);
+    return r == SONGS_PASS ? keep.result : RESULT_REDRAW;
+}
+
 /* ------------------------------------------------------------------ the result handlers */
 
-/* The song lists' options (MUSIC.AP 0x1816102e). */
+/* The song lists' options (MUSIC.AP 0x1816102e). "Search" (stage 25) works on whatever level the list shows. */
 u32 list_option(u8 *path_info, u32 check, u32 active)
 {
+    if (check == RESULT_SEARCH)
+        return search_list(path_info);
     if (check != RESULT_ADD_FAVOR1)
         return stock_list_result(path_info, check, active);
     if ((s32)(short)active <= 0)                        /* rows put on top of a list: no song there */
@@ -497,9 +602,9 @@ u32 list_option(u8 *path_info, u32 check, u32 active)
     return add_selected(path_info, (int)active);
 }
 
-/* The Playlists list's options (MUSIC.AP 0x18161092). Which level the list is at: the browser keeps the playlist
- * it is in at 0x200116 (0xffff at the top, MUSIC.AP 0x1c0c22d2); its number of rows must agree with the library. */
-u32 m3u_option(u8 *path_info, u32 check, u32 active)
+/* The Playlists list's options other than "Search". Which level the list is at: the browser keeps the playlist it
+ * is in at 0x200116 (0xffff at the top, MUSIC.AP 0x1c0c22d2); its number of rows must agree with the library. */
+static u32 m3u_edit(u8 *path_info, u32 check, u32 active)
 {
     int list = m3u_list(), rows = list_rows(0), lists = -1, songs = -1;
     uptr h;
@@ -521,4 +626,15 @@ u32 m3u_option(u8 *path_info, u32 check, u32 active)
         return check == RESULT_DEL_FAVOR ? delete_playlist((int)active) : RESULT_REDRAW;
     dialog_text(0x8000, 2, S_OPEN_FAILED);                /* the library and the list disagree: "Update list?" */
     return RESULT_REDRAW;
+}
+
+/* The Playlists list's options (MUSIC.AP 0x18161092). "Search" (stage 25) and "Add songs" (stage 26) go on from here
+ * with the least stack. */
+u32 m3u_option(u8 *path_info, u32 check, u32 active)
+{
+    if (check == RESULT_SEARCH)
+        return search_list(path_info);
+    if (check == RESULT_ADD_SONGS)
+        return add_songs((int)active);
+    return m3u_edit(path_info, check, active);
 }

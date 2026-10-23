@@ -40,8 +40,21 @@
 | 24 rebuilt again | `efa340ee…` | eBook name fine; status bar much faster, but a short blink when a menu or list opens |
 | 24 rebuilt a third time | `82eed591…` | built, not yet flashed |
 
-`x91_dump/themes/themes.json` lists the current image of each theme (stage 24: Amber `18fe3eee…`, Mint
-`e11acbca…`, Ice `2a0f2df8…`, Berry `82eed591…`).
+## 2026-10-23: search, adding songs
+
+| Stage | Image (Berry) | Result |
+|---|---|---|
+| 25 | `e64bdfb6…` | search works; around its texts stale pixels: the underline broken under the typed letters, specks above the keys, uneven key edges |
+| 25 rebuilt | `ee7d8549…` | works: clean texts and keys, and fast |
+| 26 | `00112ce2…` | "Add songs" works; after each add the screen first showed the digits typed and an empty line |
+| 26 rebuilt | `2a25f3eb…` | no digits, but with fewer than four matches the screen waited about 5 s (keys dead) after each add |
+| 26 rebuilt again | `ec287d08…` | the screen at once, keys at once; the new songs show in the playlist only after it is entered again |
+| 26, fourth build | `89137f1b…` | the list's number of rows set after an add; built, not yet flashed |
+
+`x91_dump/themes/themes.json` lists the current image of each theme (stage 26, fourth build: Amber `76f68ef2…`,
+Mint `ded7d030…`, Ice `26612f9f…`, Berry `89137f1b…`). The images of stages 24 and 25 are unchanged (built from the frozen
+sources in `design/playlist/stage24/` and `stage25/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
+`e91c8f53…`, Berry `ee7d8549…`).
 
 ## Early assumptions that were wrong
 
@@ -51,6 +64,8 @@ Comments in older builders may still reflect these:
 - Pictures 345/346 are the brightness sun, not battery marks (stage 4 → 10).
 - The track counter's digit count is a byte of the number-box record (stage 22; stage 14 thought it fixed).
 - The engine's message numbers are the SDK's plus 2 from 0x303 on (stage 18 used the SDK's; fixed in stage 20).
+- String fill mode 3 does not draw "only the dots" over what is on the screen: it leaves the driver's strip as the
+  previous string left it (stage 25; rebuilt with mode 1).
 - The engine does have a seek: 0x317 (stage 20).
 - Bytes 0 and 1 of 0x202fbc mean "the music engine runs", playing or paused (stage 24).
 - The volume curve is in the music engine, not in the audio driver (stage 21).

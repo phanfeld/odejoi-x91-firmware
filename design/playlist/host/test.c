@@ -11,6 +11,7 @@
 #include <strings.h>
 #include "../fw.h"
 #include "../library.h"
+#include "../search.h"
 #include "mock.h"
 
 static int failures;
@@ -1076,6 +1077,641 @@ static void test_list_style(void)
     memcpy(path, keep, sizeof keep);
 }
 
+/* ------------------------------------------------------------------ the search (stage 25) */
+
+#define PRESS(k) RAW_KEY(k, KT_DOWN), RAW_KEY(k, KT_SHORT_UP)
+#define PLAY_KEY RAW_KEY(KEY_PLAY, KT_DOWN), RAW_KEY(KEY_PLAY, KT_SHORT_UP)
+#define BACK_KEY RAW_KEY(KEY_RETURN, KT_DOWN), RAW_KEY(KEY_RETURN, KT_SHORT_UP)
+#define HELD_BACK RAW_KEY(KEY_RETURN, KT_DOWN), RAW_KEY(KEY_RETURN, KT_LONG), RAW_KEY(KEY_RETURN, KT_HOLD), \
+                  RAW_KEY(KEY_RETURN, 0x0200)
+#define Y_RESULT(i) (32 + 16 * (i))
+#define Y_KEY(row) (95 + 16 * (row))      /* a key row's text: one above its cell */
+#define TITLE_TEXT_X 22
+
+/* The search screen below the status bar as the design has it, whatever the state: the query line in the background
+   colour with its underline (the accent while the keys type, else the line colour); the result lines, at most one of
+   them chosen (a panel 126 x 15 at x = 1 with the accent mark); the keys 41 x 15, one pixel apart, at most one in the
+   accent. The mock counts a text's whole region as painted in its background colour (the driver paints the part the
+   text covers), so a text that reaches out of its place, on the wrong colour, shows here; and the fills alone must
+   draw the same, so no text is needed to complete a shape. Checked whenever the search waits for a key after
+   drawing; the first difference is reported. */
+static int layout_failed;
+static long layout_at(int x, int y, long under, int line, int key)
+{
+    int i = (y - 32) / 16, ry = (y - 32) % 16, row = (y - 96) / 16, ky = (y - 96) % 16, col = (x - 1) / 42;
+    if (y < 32)
+        return y == 31 && x >= 4 && x < 124 ? under : COL_BG;
+    if (y < 96)
+        return i != line || ry == 15 || x < 1 || x > 126 ? COL_BG
+             : x >= 3 && x < 5 && ry >= 3 && ry < 12 ? COL_ACCENT : COL_SURFACE;
+    return ky == 15 || x < 1 || (x - 1) % 42 == 41 || col > 2 ? COL_BG : row * 3 + col == key ? COL_ACCENT : COL_SURFACE;
+}
+
+static void check_layout(void)
+{
+    long under = fill_at(4, 31);
+    int line = -1, key = -1, i, x, y;
+    for (i = 0; i < 4; i++)
+        if (fill_at(2, 32 + 16 * i) == COL_SURFACE)
+            line = i;
+    for (i = 0; i < 12; i++)
+        if (fill_at(2 + i % 3 * 42, 97 + i / 3 * 16) == COL_ACCENT)
+            key = i;
+    if (layout_failed)
+        return;
+    if ((under == COL_ACCENT) != (key >= 0) || (key >= 0) == (line >= 0) || (under != COL_ACCENT && under != COL_LINE)) {
+        layout_failed = 1;
+        CHECK(0, "search screen: underline %#lx, chosen line %d, accent key %d", under, line, key);
+        return;
+    }
+    for (y = 16; y < 160; y++)
+        for (x = 0; x < 128; x++)
+            if (fill_at(x, y) != layout_at(x, y, under, line, key) || fill_only_at(x, y) != fill_at(x, y)) {
+                layout_failed = 1;
+                CHECK(0, "search screen: %d,%d is %#lx (by fills %#lx), not %#lx (line %d, key %d)", x, y, fill_at(x, y),
+                      fill_only_at(x, y), layout_at(x, y, under, line, key), line, key);
+                return;
+            }
+}
+
+/* UTF-8 source text as UTF-16 with FF FE (code points up to U+FFFF) */
+static int to_utf16(u8 *out, const char *s)
+{
+    const u8 *p = (const u8 *)s;
+    int n = 2;
+    u32 c;
+    out[0] = 0xff;
+    out[1] = 0xfe;
+    while (*p) {
+        c = *p++;
+        if (c >= 0xe0) {
+            c = (c & 0x0f) << 12 | (p[0] & 0x3f) << 6 | (p[1] & 0x3f);
+            p += 2;
+        } else if (c >= 0xc0) {
+            c = (c & 0x1f) << 6 | (p[0] & 0x3f);
+            p++;
+        }
+        out[n++] = (u8)c;
+        out[n++] = (u8)(c >> 8);
+    }
+    return n;
+}
+
+static void add_row(const char *s, int wide)            /* wide: as UTF-16, else the bytes as they are */
+{
+    struct name_row *r = &name_rows[name_count++];
+    memset(r, 0, sizeof *r);
+    if (wide) {
+        r->n = to_utf16(r->b, s);
+    } else {
+        r->n = (int)strlen(s);
+        memcpy(r->b, s, (size_t)r->n);
+    }
+}
+
+/* the level the search runs on: the browser's state and the list control's, standing on row `at` */
+static void level_of_names(int dirs, int menus, int at)
+{
+    browse_mode = BROWSE_NAMES;
+    name_dirs = dirs;
+    level.dir_total = (u16)dirs;
+    level.file_total = (u16)(name_count - dirs);
+    level.layer_no = 0;
+    menu_count = menus;
+    memset(&dirctl, 0, sizeof dirctl);
+    dirctl.page = 6;
+    dirctl.total = (u16)(name_count + menus);
+    dirctl.list_no = (u16)at;
+    dirctl.top = (u16)(at > 3 ? at - 3 : 1);
+    dirctl.bottom = (u16)(dirctl.top + 5 < dirctl.total ? dirctl.top + 5 : dirctl.total);
+    dirctl.active = dirctl.old = (u16)(at - dirctl.top + 1);
+    screen_reset();
+    raw_keys = 1;
+    selects = stock_calls = 0;
+    last_stock_check = last_stock_active = 0;
+}
+
+static void keyseq(int n, const int *k)
+{
+    memcpy(events, k, sizeof(int) * (size_t)n);
+    event_count = n;
+    event_next = 0;
+}
+#define KEYSEQ(...) do { static const int k_[] = {__VA_ARGS__}; keyseq((int)(sizeof k_ / sizeof k_[0]), k_); } while (0)
+
+/* whether the keys spell the name, and the letters they spell (non-ASCII as '?') */
+static int spelled_as(const char *name, int wide, const char *keys, const char *want)
+{
+    u8 b[64], q[24];
+    u16 pred[26];
+    char got[32];
+    int i, n = 0;
+
+    memset(b, 0, sizeof b);
+    if (wide)
+        to_utf16(b, name);
+    else
+        memcpy(b, name, strlen(name));
+    for (i = 0; keys[i]; i++)
+        q[n++] = (u8)(keys[i] - '0');
+    if (!search_matches(b, q, n, pred))
+        return !want;
+    for (i = 0; pred[1 + i] && i < 31; i++)
+        got[i] = pred[1 + i] < 0x80 ? (char)pred[1 + i] : '?';
+    got[i] = 0;
+    if (pred[0] != 0xfeff || !want || strcmp(got, want))
+        printf("  \"%s\" with %s spells \"%s\"\n", name, keys, got);
+    return want && pred[0] == 0xfeff && !strcmp(got, want);
+}
+
+static void test_matching(void)
+{
+    static const struct { const char *name; int wide; const char *keys, *want; } cases[] = {
+        {"The Beatles", 0, "2328", "Beat"},              /* the beginning of any word */
+        {"The Beatles", 0, "843", "The"},
+        {"The Beatles", 0, "843232", "The Bea"},         /* on across the space */
+        {"The Beatles", 0, "3", NULL},                   /* not inside a word */
+        {"The Beatles", 0, "2328537", "Beatles"},
+        {"The Beatles", 0, "23285378", NULL},            /* not beyond the name */
+        {"ABBA", 0, "2222", "ABBA"},                     /* letter case */
+        {"AC/DC", 0, "2232", "AC/DC"},                   /* signs are skipped */
+        {"AC/DC", 0, "32", "DC"},
+        {"Guns N' Roses", 0, "6", "N"},
+        {"Florence + the Machine", 0, "843622", "the Mac"},
+        {"01 - Song", 0, "01", "01"},                    /* digits are their own keys */
+        {"01 - Song", 0, "7664", "Song"},
+        {"Mot\xf6rhead", 0, "6686", "Mot?"},             /* code page 1252 */
+        {"\x8aipka", 0, "7475", "?ipk"},                 /* 1252's own letters (S with caron) */
+        {"A\xd7" "B", 0, "22", "A?B"},                   /* the multiplication sign is no letter */
+        {"Bj\xc3\xb6rk", 1, "2567", "Bj?r"},             /* UTF-16 */
+        {"\xc5\x81\xc3\xb3" "d\xc5\xba", 1, "5639", "??d?"},   /* Latin Extended-A: L with stroke, z with acute */
+        {"\xef\xbb\xbf" "Beyonc\xc3\xa9", 0, "2396623", "Beyonc?"},   /* UTF-8 with its mark */
+        {"\xe4\xb8\xad\xe6\x96\x87", 1, "2", NULL},      /* nothing to spell */
+        {"Sigur R\xc3\xb3s", 1, "767", "R?s"},
+        {"", 0, "2", NULL},
+    };
+    /* every accented letter's key, at each edge where the next letter of the block is on another key */
+    static const struct { u16 c; int key; } letters[] = {
+        {0xc5, 2}, {0xc6, 2}, {0xc7, 2}, {0xc8, 3}, {0xcb, 3}, {0xcc, 4}, {0xcf, 4}, {0xd0, 3}, {0xd1, 6}, {0xd2, 6},
+        {0xd6, 6}, {0xd7, -1}, {0xd8, 6}, {0xd9, 8}, {0xdc, 8}, {0xdd, 9}, {0xde, 8}, {0xdf, 7}, {0xe0, 2}, {0xe7, 2},
+        {0xf0, 3}, {0xf6, 6}, {0xf7, -1}, {0xf8, 6}, {0xfc, 8}, {0xfd, 9}, {0xfe, 8}, {0xff, 9},
+        {0x100, 2}, {0x10d, 2}, {0x10e, 3}, {0x11b, 3}, {0x11c, 4}, {0x133, 4}, {0x134, 5}, {0x142, 5}, {0x143, 6},
+        {0x153, 6}, {0x154, 7}, {0x161, 7}, {0x162, 8}, {0x173, 8}, {0x174, 9}, {0x17e, 9}, {0x17f, 7}, {0x180, -1},
+        {0xbf, -1}, {'@', -1}, {'[', -1}, {'`', -1}, {'{', -1},
+    };
+    unsigned i;
+    int k, hit;
+    u8 name[8], q[1];
+    u16 pred[26];
+
+    for (i = 0; i < sizeof cases / sizeof cases[0]; i++)
+        CHECK(spelled_as(cases[i].name, cases[i].wide, cases[i].keys, cases[i].want), "matching: \"%s\" with %s",
+              cases[i].name, cases[i].keys);
+    for (i = 0; i < sizeof letters / sizeof letters[0]; i++) {
+        memset(name, 0, sizeof name);
+        name[0] = 0xff;
+        name[1] = 0xfe;
+        name[2] = (u8)letters[i].c;
+        name[3] = (u8)(letters[i].c >> 8);
+        for (k = 0, hit = -1; k < 10; k++) {
+            q[0] = (u8)k;
+            if (search_matches(name, q, 1, pred))
+                hit = hit < 0 ? k : 99;
+        }
+        CHECK(hit == letters[i].key, "U+%04X is on key %d, not %d", letters[i].c, hit, letters[i].key);
+    }
+}
+
+/* the artists of the search tests, rows 1 to 11 */
+static void artists(void)
+{
+    static const char *a[] = {"ABBA", "AC/DC", "Adele", "Arctic Monkeys", "Bear's Den", "Beastie Boys", "The Beatles",
+                              "Bj\xc3\xb6rk", "Bon Iver", "Coldplay", "Daft Punk"};
+    unsigned i;
+    name_count = 0;
+    for (i = 0; i < sizeof a / sizeof a[0]; i++)
+        add_row(a[i], i == 7);
+}
+
+static void test_search_keys(void)
+{
+    u8 pi[128];
+    u32 r;
+    dirctl_t keep;
+    long on, off;
+
+    /* an artist: 2, 3, 2 finds Bear's Den, Beastie Boys and The Beatles; Down to the second, Play opens it */
+    artists();
+    level_of_names(11, 0, 2);
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    KEYSEQ(SNAP(1), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_SHORT_UP), PLAY_KEY, IDLE(50),
+           RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(50), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, IDLE(50),
+           SNAP(2), RAW_KEY(KEY_MENU, KT_SHORT_UP), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_HOLD), SNAP(3), IDLE(1),
+           RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 6, "artist: %#x, %d selects, row %d", r, selects, selected_row);
+    CHECK(dirctl.list_no == 6 && dirctl.top == 1 && dirctl.active == 6 && dirctl.bottom == 6, "artist: list at %d, top %d",
+          dirctl.list_no, dirctl.top);
+    CHECK(!strcmp(text_at(6, 16), "Bea") && !strcmp(text_at(80, 16), "2/3"), "query line \"%s\", count \"%s\"",
+          text_at(6, 16), text_at(80, 16));
+    CHECK(!strcmp(text_at(8, Y_RESULT(0)), "Bear's Den") && !strcmp(text_at(8, Y_RESULT(1)), "Beastie Boys")
+          && !strcmp(text_at(8, Y_RESULT(2)), "The Beatles") && !*text_at(8, Y_RESULT(3)),
+          "results: %s / %s / %s / %s", text_at(8, Y_RESULT(0)), text_at(8, Y_RESULT(1)), text_at(8, Y_RESULT(2)),
+          text_at(8, Y_RESULT(3)));
+    CHECK(!strcmp(text_at(TITLE_TEXT_X, 0), "Search") && !strcmp(text_at(43, Y_KEY(0)), "2")
+          && !strcmp(text_at(54, Y_KEY(0)), "abc") && !strcmp(text_at(85, Y_KEY(2)), "9")
+          && !strcmp(text_at(96, Y_KEY(2)), "wxyz") && !strcmp(text_at(1, Y_KEY(3)), "Del")
+          && !strcmp(text_at(43, Y_KEY(3)), "0") && !strcmp(text_at(85, Y_KEY(3)), "OK") && !strcmp(text_at(1, Y_KEY(0)), "1"),
+          "keypad: %s %s %s %s %s %s %s", text_at(43, Y_KEY(0)), text_at(54, Y_KEY(0)), text_at(85, Y_KEY(2)),
+          text_at(96, Y_KEY(2)), text_at(1, Y_KEY(3)), text_at(43, Y_KEY(3)), text_at(85, Y_KEY(3)));
+    CHECK(tag_while_drawing == 0x8e && *timer_tag() == 0x84, "timer tag %#x while drawing, %#x after", tag_while_drawing,
+          *timer_tag());
+    CHECK(pen == 0xffff, "the pen colour is not given back: %#x", pen);
+    /* rows read: all 11 for the first key, then only those that still matched (10, then 4); 9 for the lines, and the
+       lines of the matches each key found (at most 4 per key: they are drawn after the search's stretch) */
+    CHECK(items_rows <= 11 + 10 + 4 + 9 + 3 * 4, "%d rows read", items_rows);
+
+    /* the keypad: the chosen key filled in another colour than the others; Previous goes round its row, Up stops at
+       the top when nothing is found */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN),
+           IDLE(1), BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    on = fill_at(85 + 20, Y_KEY(0) + 8);                /* 3: the chosen one, in the middle of its key */
+    off = fill_at(43 + 20, Y_KEY(0) + 8);
+    CHECK(r == RESULT_REDRAW && selects == 0 && stock_calls == 0 && on != off && off == fill_at(1 + 20, Y_KEY(0) + 8)
+          && !strcmp(text_at(85, Y_KEY(0)), "3"), "keypad: %#x, fills %#lx %#lx", r, on, off);
+    CHECK(!*text_at(6, 16) && !*text_at(80, 16) && !*text_at(8, Y_RESULT(0)), "nothing typed: \"%s\" \"%s\" \"%s\"",
+          text_at(6, 16), text_at(80, 16), text_at(8, Y_RESULT(0)));
+
+    /* Return: one key back (all rows read again), held: all keys; then it leaves; the list did not move */
+    level_of_names(11, 0, 4);
+    keep = dirctl;
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(20), SNAP(5), BACK_KEY,
+           IDLE(20), SNAP(6), PLAY_KEY, HELD_BACK, IDLE(5), SNAP(7), BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 0 && !memcmp(&keep, &dirctl, sizeof keep), "Return: %#x, %d selects", r, selects);
+    CHECK(!*text_at(6, 16) && !*text_at(8, Y_RESULT(0)), "after a held Return: \"%s\" \"%s\"", text_at(6, 16),
+          text_at(8, Y_RESULT(0)));
+
+    /* after Return the shorter query finds again what the longer one had dropped: 2-3, Return, the 10th of 2 */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(20), BACK_KEY, IDLE(20),
+           PRESS(KEY_MENU), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 10 && !strcmp(text_at(80, 16), "10/10"),
+          "Return finds again: row %d, count %s", selected_row, text_at(80, 16));
+
+    /* the results lie above the keypad: Up from its top row goes to the first result, Down from the last one comes back
+       to the top row (to the key above where it was: 2 abc), so Play there types 2 again; Down on the bottom row stays */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD),
+           RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD), RAW_KEY(KEY_DOWN, KT_HOLD),
+           RAW_KEY(KEY_DOWN, KT_DOWN), SNAP(9), PLAY_KEY, IDLE(20), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 2 && !strcmp(text_at(6, 16), "AB"),
+          "up and down between keypad and results: row %d, query \"%s\"", selected_row, text_at(6, 16));
+    /* in by OK (bottom right), out below the last result: onto the top row of that column, 3 def; 2-3 finds Adele */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(20), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN),
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, IDLE(20),
+           RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 1 && selected_row == 3, "out below the results: row %d", selected_row);
+
+    /* no match */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, PLAY_KEY, PLAY_KEY, IDLE(30), SNAP(4),
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_MENU, KT_SHORT_UP), PLAY_KEY, IDLE(1), HELD_BACK, BACK_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_REDRAW && selects == 0 && stock_calls == 0, "no match: %#x %d %d", r, selects, stock_calls);
+
+    /* the volume key: the pop-up, then the whole screen again; a system message ends the search with its result */
+    level_of_names(11, 0, 1);
+    KEYSEQ(RAW_KEY(0x0a, KT_DOWN), RAW_KEY(0x0a, KT_SHORT_UP), IDLE(1), APP(0x8104));
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == 0x8104 && volume_popups == 1 && !strcmp(text_at(TITLE_TEXT_X, 0), "Search") && *timer_tag() == 0x84,
+          "system message: %#x, %d pop-ups", r, volume_popups);
+}
+
+/* every row's place in a long list, the menu row on top, a song plays by the stock "Play" */
+static void test_search_songs(void)
+{
+    u8 pi[128];
+    char name[40];
+    int i, want = 0, first = 0;
+    u32 r;
+
+    name_count = 0;
+    for (i = 1; i <= 300; i++) {
+        snprintf(name, sizeof name, i % 7 ? "%02d - Track %d" : "%02d - Wonderwall %d", i % 100, i);
+        add_row(name, i % 2);
+        if (!(i % 7)) {
+            want++;
+            if (!first)
+                first = i;
+        }
+    }
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    /* "Repeat All Songs" on top; 9-6-6 finds the Wonderwalls (row 7, 14, ...): Down to the last but one, Play */
+    level_of_names(0, 1, 2);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN),
+           PLAY_KEY, PLAY_KEY, IDLE(400), RAW_KEY(KEY_RETURN, KT_DOWN),
+           RAW_KEY(KEY_RETURN, KT_SHORT_UP), PLAY_KEY, IDLE(400), PRESS(KEY_MENU), RAW_KEY(KEY_DOWN, KT_DOWN), SNAP(8),
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    i = (want - 2) * 7 + 7;                             /* the Wonderwall before the last */
+    CHECK(r == RESULT_PLAYING_START && stock_calls == 1 && last_stock_check == RESULT_PLAYING_START && !last_stock_m3u
+          && last_stock_active == (u32)i && selects == 0, "song: %#x, stock %d (%#x, row %u)", r, stock_calls,
+          last_stock_check, last_stock_active);
+    CHECK(dirctl.list_no == i + 1 && dirctl.top == i - 1 && dirctl.active == 3 && dirctl.bottom == i + 4 && dirctl.old == 3,
+          "song: list at %d, top %d, active %d, bottom %d", dirctl.list_no, dirctl.top, dirctl.active, dirctl.bottom);
+    CHECK(!strcmp(text_at(80, 16), "41/42") && want == 42, "song: count %s (%d)", text_at(80, 16), want);
+
+    /* typing while the search runs: the answer is the one of the whole query; the last rows of a list */
+    level_of_names(0, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(3), RAW_KEY(KEY_UP, KT_DOWN),
+           PLAY_KEY, IDLE(2), PLAY_KEY, RAW_KEY(KEY_DOWN, KT_DOWN), IDLE(400), PRESS(KEY_MENU),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_NEXT, KT_HOLD), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_active == 294 && dirctl.top == 292 && dirctl.list_no == 294
+          && dirctl.active == 3 && dirctl.bottom == 297 && !strcmp(text_at(80, 16), "42/42"),
+          "while searching: %#x row %u top %d, count %s", r, last_stock_active, dirctl.top, text_at(80, 16));
+
+    /* inside a playlist: its "Play" */
+    level_of_names(0, 0, 1);
+    pi[0] = FSEL_M3U;
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, IDLE(400), PRESS(KEY_MENU), PLAY_KEY);
+    r = m3u_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_m3u && last_stock_active == (u32)first, "playlist: %#x %u", r,
+          last_stock_active);
+}
+
+/* a list longer than the search covers: the first 4000 rows */
+static void test_search_long(void)
+{
+    u8 pi[128];
+    char name[24];
+    int i;
+    u32 r;
+
+    name_count = 0;
+    for (i = 1; i <= 4100; i++) {
+        snprintf(name, sizeof name, "%s %d", i == 3999 || i == 4050 ? "Zebra" : "Song", i);
+        add_row(name, 0);
+    }
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_PLAYLIST;
+    level_of_names(0, 0, 1);
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY,             /* 9 3 2 7: "Zebr" */
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY,
+           RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, IDLE(2000),
+           PRESS(KEY_MENU), PLAY_KEY);
+    r = list_option(pi, RESULT_SEARCH, 1);
+    CHECK(r == RESULT_PLAYING_START && last_stock_active == 3999 && !strcmp(text_at(80, 16), "1/1"),
+          "long list: %#x row %u, count %s", r, last_stock_active, text_at(80, 16));
+}
+
+/* MUSIC.LIB as the library builder writes it (search.c), for the songs nodes[songs[0 .. n)]: All songs in the order of
+   their names, each name cut to 26 characters as the builder cuts it. */
+static int songs_library(const int *songs, int n)
+{
+    int node = find("MUSIC.LIB"), order = 1 + (n + 1) / 2, sorted[64], i, k, t;
+    u32 size = (u32)(order + 2 * ((2 * n + 511) / 512)) * 512;
+    u8 *d, *rec;
+
+    if (node < 0)
+        node = add_node(0, "MUSIC.LIB", 0, NULL);
+    nodes[node].gone = 0;
+    node_room(node, size);
+    d = (u8 *)nodes[node].data;
+    memset(d, 0, size);
+    nodes[node].size = size;
+    memcpy(d, "MUSIC", 5);
+    d[8] = (u8)n;
+    d[10] = 1;
+    memcpy(d + 0x10, "ALLSONG", 7);
+    d[0x24] = (u8)order;
+    d[0x26] = (u8)(order + (2 * n + 511) / 512);
+    for (i = 0; i < n; i++) {
+        rec = d + 512 + 256 * i;
+        rec[0] = 0xff;
+        rec[1] = 0xfe;
+        for (k = 0; k < 26 && nodes[songs[i]].name[k]; k++)
+            rec[2 + 2 * k] = (u8)nodes[songs[i]].name[k];
+        memcpy(rec + 0x94, "MP3", 4);
+        memcpy(rec + 0x9c, &nodes[songs[i]].parent, 4);
+        memcpy(rec + 0xa0, &songs[i], 4);
+        layer_of(nodes[songs[i]].parent, songs[i], rec + 0xa8);
+        sorted[i] = i;
+    }
+    for (i = 1; i < n; i++)                             /* by name */
+        for (k = i; k > 0; k--) {
+            if (strncasecmp(nodes[songs[sorted[k - 1]]].name, nodes[songs[sorted[k]]].name, 26) <= 0)
+                break;
+            t = sorted[k];
+            sorted[k] = sorted[k - 1];
+            sorted[k - 1] = t;
+        }
+    for (i = 0; i < n; i++) {
+        d[order * 512 + 2 * i] = (u8)sorted[i];
+        d[d[0x26] * 512 + 2 * sorted[i]] = (u8)i;
+    }
+    return node;
+}
+
+/* the search screen at SNAP(n): the query line, the count, the result lines, the chosen line (or -1) */
+struct snapshot { char query[64], count[64], line[4][64]; int chosen; };
+static struct snapshot snaps[32];
+static void remember(int n)
+{
+    struct snapshot *snap = &snaps[n & 31];
+    int i;
+    snprintf(snap->query, sizeof snap->query, "%s", text_at(6, 16));
+    snprintf(snap->count, sizeof snap->count, "%s", text_at(80, 16));
+    snap->chosen = -1;
+    for (i = 0; i < 4; i++) {
+        snprintf(snap->line[i], sizeof snap->line[i], "%s", text_at(8, Y_RESULT(i)));
+        if (fill_at(2, Y_RESULT(i)) == COL_SURFACE)
+            snap->chosen = i;
+    }
+}
+
+/* the list control on row 1 of a list of `total` rows, `page` lines on a page */
+static void list_at(int total, int page)
+{
+    memset(&dirctl, 0, sizeof dirctl);
+    menu_count = 0;
+    dirctl.page = (u8)page;
+    dirctl.total = (u16)total;
+    dirctl.top = dirctl.list_no = dirctl.active = dirctl.old = 1;
+    dirctl.bottom = (u16)(page < total ? page : total);
+}
+
+/* "Add songs" (stage 26): the library's songs by the keypad, each one chosen to the end of the playlist */
+static void test_add_songs(void)
+{
+    u8 pi[128];
+    char want[2048], name[40];
+    dir_brow_t b;
+    int all[40], n = 0, i, lib_node, wonder[8];
+    u32 r;
+
+    disk();
+    all[n++] = find("01 - 4-30.mp3");
+    all[n++] = find("x.mp3");
+    all[n++] = find("02 - Love Left (original mix).mp3");
+    all[n++] = song;
+    lib_node = songs_library(all, n);
+    browse_mode = BROWSE_M3U;
+    m3u_cur = 0xffff;
+    browser_enter_dir(BROW_SON, m3u_row("Focus"), &b);
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_M3U;
+    screen_reset();
+    raw_keys = 1;
+    on_snapshot = remember;
+
+    /* inside Focus: 7-8-2 spells "Sta" of Stardust; Menu and Play add it, the search comes back at once with the same
+       keys and the same line, and Play there (before the search has found anything again) finds it in the playlist
+       already; a held Return clears the keys, Return leaves */
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY,
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(5), SNAP(10), PRESS(KEY_MENU), PLAY_KEY,
+           SNAP(14), PLAY_KEY, IDLE(5), SNAP(11), HELD_BACK, BACK_KEY);
+    dialogs = 0;
+    list_at(1, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    snprintf(want, sizeof want, "%s%s", DANGER, LINE);
+    content_is(focus, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && !strcmp(last_message, "text 12: \"01 - Stardust (original \", Focus")
+          && last_dialog_text == S_ALREADY_ADDED && dialogs == 2, "add: %#x, %s, then text %d (%d messages)", r,
+          last_message, last_dialog_text, dialogs);
+    CHECK(!strcmp(snaps[11].query, "Sta") && !strcmp(snaps[11].count, "1/1")
+          && !strcmp(snaps[11].line[0], "01 - Stardust (original ") && snaps[11].chosen == 0,
+          "back after the add: \"%s\" %s, \"%s\" chosen %d", snaps[11].query, snaps[11].count, snaps[11].line[0],
+          snaps[11].chosen);
+    CHECK(!strcmp(snaps[14].query, "Sta") && !strcmp(snaps[14].count, "~")
+          && !strcmp(snaps[14].line[0], "01 - Stardust (original ") && snaps[14].chosen == 0,
+          "the first screen after the add (before the search): \"%s\" %s, \"%s\" chosen %d", snaps[14].query,
+          snaps[14].count, snaps[14].line[0], snaps[14].chosen);
+    CHECK(!strcmp(text_at(TITLE_TEXT_X, 0), "Add songs") && *timer_tag() == 0x84, "add: title \"%s\", tag %#x",
+          text_at(TITLE_TEXT_X, 0), *timer_tag());
+    CHECK(writes_while_playing == 0 && status == PLAY_PLAYING, "add: %d writes while playing", writes_while_playing);
+    CHECK(dirctl.total == 2 && dirctl.bottom == 2 && dirctl.top == 1 && dirctl.list_no == 1 && dirctl.active == 1,
+          "the list after the add (it shows the new song at once): total %d, rows %d to %d, on %d", dirctl.total,
+          dirctl.top, dirctl.bottom, dirctl.list_no);
+
+    /* on a playlist in the list of playlists: 5-6-8-3 ("Love") to NothingMuch */
+    browser_enter_dir(BROW_PARENT, 0, &b);
+    screen_reset();
+    KEYSEQ(PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN),
+           PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           PLAY_KEY, IDLE(5), PRESS(KEY_MENU), PLAY_KEY, IDLE(5), BACK_KEY, HELD_BACK, BACK_KEY);
+    list_at(2, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, (u32)m3u_row("NothingMuch"));
+    snprintf(want, sizeof want, "%s%s", X, LOVE);
+    content_is(nothing, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && !strcmp(last_message, "text 12: \"02 - Love Left (original\", NothingMuch")
+          && dirctl.total == 2 && dirctl.bottom == 2, "top: %#x, %s, the list's total %d", r, last_message, dirctl.total);
+
+    /* many songs: the 6th of eight "Wonder" songs (9-6-6) is added, and the search comes back on it, the lines as they
+       were (Play there again: already in it); its first screen comes before the search: the letters and the chosen
+       song, the other lines as they are found */
+    for (i = 0; i < 22; i++) {
+        snprintf(name, sizeof name, "Track %02d.mp3", i);
+        all[n++] = add_node(find("B"), name, 0, NULL);
+    }
+    for (i = 0; i < 8; i++) {                       /* four of them early in All songs, four late */
+        snprintf(name, sizeof name, i < 4 ? "A Wonder %d.mp3" : "Wonder %d.mp3", i);
+        all[n++] = wonder[i] = add_node(find("B"), name, 0, NULL);
+    }
+    songs_library(all, n);
+    browser_enter_dir(BROW_SON, m3u_row("Focus"), &b);
+    screen_reset();
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, PLAY_KEY,
+           IDLE(10), PRESS(KEY_MENU), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, SNAP(13),
+           IDLE(1), SNAP(16), IDLE(9), SNAP(12), PLAY_KEY, IDLE(10), BACK_KEY, PLAY_KEY, IDLE(10), SNAP(15), HELD_BACK, BACK_KEY);
+    list_at(2, 2);                                     /* a page of two lines: the new song lies behind it */
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    snprintf(want, sizeof want, "%s%sMusic\\A\\B\\Wonder 5.mp3\r\n", DANGER, LINE);
+    content_is(focus, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && last_dialog_text == S_ALREADY_ADDED && !strcmp(snaps[12].count, "6/8")
+          && !strcmp(snaps[12].line[0], "A Wonder 2.mp3") && !strcmp(snaps[12].line[3], "Wonder 5.mp3")
+          && snaps[12].chosen == 3, "many: %#x, text %d, count %s, lines %s .. %s, chosen %d", r, last_dialog_text,
+          snaps[12].count, snaps[12].line[0], snaps[12].line[3], snaps[12].chosen);
+    CHECK(!strcmp(snaps[13].query, "Won") && !strcmp(snaps[13].count, "~") && snaps[13].chosen == 3
+          && !*snaps[13].line[0] && !strcmp(snaps[13].line[3], "Wonder 5.mp3"),
+          "many, the first screen after the add: \"%s\" %s, %s .. %s, chosen %d", snaps[13].query, snaps[13].count,
+          snaps[13].line[0], snaps[13].line[3], snaps[13].chosen);
+    CHECK(dirctl.total == 3 && dirctl.bottom == 2 && dirctl.top == 1, "many: the list's total %d, rows %d to %d",
+          dirctl.total, dirctl.top, dirctl.bottom);
+    CHECK(!strcmp(snaps[16].count, "4~") && !strcmp(snaps[16].line[0], "A Wonder 2.mp3")       /* four found again, */
+          && !strcmp(snaps[16].line[3], "Wonder 5.mp3") && snaps[16].chosen == 3,                 /* the chosen one not */
+          "many, four found again: %s, %s .. %s, chosen %d", snaps[16].count, snaps[16].line[0], snaps[16].line[3],
+          snaps[16].chosen);
+    CHECK(!strcmp(snaps[15].query, "9666") && !strcmp(snaps[15].line[0], "No matches"),       /* another key: the kept */
+          "another key after the add: \"%s\", \"%s\"", snaps[15].query, snaps[15].line[0]);   /* song is gone */
+    (void)wonder;
+
+    /* a system message ends it with its result; the list and the library disagree, or no MUSIC.LIB: only a message */
+    screen_reset();
+    KEYSEQ(IDLE(1), APP(0x8104));
+    list_at(3, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == 0x8104 && *timer_tag() == 0x84, "system message: %#x", r);
+    rows_extra = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "disagree: %#x %d", r, last_dialog_text);
+    rows_extra = 0;
+    nodes[lib_node].gone = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "no MUSIC.LIB: %#x %d", r,
+          last_dialog_text);
+    nodes[lib_node].gone = 0;
+    nodes[lib_node].data[0x10] = 'X';                   /* not the head the builder writes */
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "another head: %#x %d", r,
+          last_dialog_text);
+    raw_keys = 0;
+    on_snapshot = NULL;
+}
+
+static void test_search(void)
+{
+    const char *log = getenv("SEARCH_SCREENS");
+    if (log)
+        draw_log = fopen(log, "w");
+    screen_check = check_layout;
+    test_matching();
+    test_search_keys();
+    test_search_songs();
+    test_search_long();
+    test_add_songs();
+    if (draw_log)
+        fclose(draw_log);
+    draw_log = NULL;
+    screen_check = NULL;
+    raw_keys = 0;
+    browse_mode = BROWSE_SONGS;
+    screen_reset();
+}
+
 int main(int argc, char **argv)
 {
     test_add();
@@ -1084,6 +1720,7 @@ int main(int argc, char **argv)
     test_song_lists();
     test_playlists();
     test_list_style();
+    test_search();
     test_real_library(argc > 1 ? argv[1] : "../../../x91_dump/device_files/2026-10-21/M3U.LIB");
     CHECK(refused_opens == 0, "%d files opened while another was open", refused_opens);
     printf("%s (%d failure%s)\n", failures ? "FAILED" : "all passed", failures, failures == 1 ? "" : "s");

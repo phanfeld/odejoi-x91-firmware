@@ -62,6 +62,11 @@ the count at 0x20013c; entries are 16 bytes:
 
 Routines: create 0x18a21a48 (wrapper 0x18a21bc0), stop 0x18a21acc, modify (new period, next = now + period)
 0x18a21af8, kill 0x18a21b3c, restart (state 0, next = now + period; returns 1, or 0 for no such timer) 0x18a21b80.
+
+Byte +5 of an entry is its tag. The resident dispatcher (`MUSIC.AP` 0x1104ac) fires a timer only while its tag is
+the program's current one (0x20013d) or 0xff, so a scene pauses the timers of the scenes below it by setting its own
+tag (the SDK's `change_app_timer_tag`; the list control sets 0x84 and has an 80 ms timer that scrolls its chosen
+row; stage 25's search sets 0x8e while it shows).
 The time comes from system call 28 (`svc 15`). Timers fire when the program looks at them, which is when it waits for
 keys; a routine never interrupts drawing.
 
@@ -82,7 +87,22 @@ The file lists (music lists, the folder view, eBook, Video and Picture) are draw
   and the chosen item's name below it (the artist, the genre); folder browsing writes "ROOT" at the disk's top and
   otherwise the folder's own name.
 - The option key calls a list option callback (`MUSIC.AP` 0x18161000); when the result handler returns 0x8019 or
-  0x801a, the control takes the row out and reads itself again.
+  0x801a, the control takes the row out and reads itself again. For 0x8014 (redraw) it reads its level again
+  (browser "current"), and the page from its own state (`directory_option_deal`, 0x18ba1d30), keeping its number of
+  rows: it counts them (lists, songs and menu rows into +12) only in 0x187012bc, which runs when +22 is 1 and also
+  takes the place from the level's history (0x18ba18f8). Code that adds rows sets +12 itself (stage 26). Any other
+  result leaves the control (0x8601 "Play" plays the selected location), after its place is kept for the level.
+- Its own state (`dir_control_t`, `MUSIC.AP` 0x200714): disk +0, file source +1, lines per page +2 (read from the
+  style), `dir_com` +4, first and last row shown +8 and +10, all rows +12, the chosen row +14 (rows from 1, the menu
+  rows on top included; their number is at 0x20070a), its line on the page +16 and the line before +18, what to do
+  next +20 (read: 3 the page again, 4 from the top), draw mode +21, "read the level's head" +22. Rows below the menu
+  rows are the browser's rows from 1.
+- Keys go through the menu key table to its handler 0x18681200 (`directory_msg_deal_gui`, `(path_info, state,
+  event)`): 0x2701 next, 0x2702 previous, 0x2704 Select (keeps this level's place, 0x18701398 with the layer, then
+  enters a row with lists below, or selects a file row and returns its result), 0x2705 back, 0x2706 options. Stage
+  25 calls it with 0x2704 after moving the state to a found row.
+- The browser reads any number of rows per call (`get items`, 0x1c0a2023; the library's 0x1c93100c), but opens the
+  library file and reads its head at every call; records come through a one-sector buffer in the browser's bank.
 - The control's data area 0x101000 to 0x1011ff (0x1200 bank group) is overwritten if code called from it loads a
   0x1000 bank.
 
@@ -96,6 +116,15 @@ menus). For styles 0x6002 and 0x6004 it switches the status bar on before a full
 The list box is called from three shared banks, 0x18601000, 0x18621000 and 0x18641000 (in most programs at
 0x1860113c, 0x18621478 and 0x18641170), and from a few program banks. Since stage 24 every such call except the list
 control's goes to `menu_box` ({doc}`../code/patches`) at the end of its own bank.
+
+## Keys
+
+A key message (8 bytes, the SDK's `input_gui_msg_t`) has its type at +0 (0 a key), the key at +2 and the event bits
+at +4 (0x2000 down, 0x1000 long, 0x0800 held, 0x0400 let go short, 0x0200 let go long). Keys: Menu 0x03, Previous
+0x04, Play 0x05, Next 0x06, volume 0x0a, Return 0x80, Up 0x82, Down 0x83. The key mapping (0x18aa1a00) looks a key up
+in the table it is given (6 bytes per entry: key, pad, event bits, event), then in the common table (0x18aa1a84: the
+volume key, the key lock). The menus' table (0x18aa1ac0) has only Up, Down, Play, Return and Menu; the playing
+screen's (0x180a1530) Previous and Next.
 
 ## Key filter with the screen off
 

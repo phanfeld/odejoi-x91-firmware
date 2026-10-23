@@ -18,7 +18,7 @@ ROOT = os.path.dirname(HERE)
 sys.path.insert(0, HERE)
 import x91_design as xd  # noqa: E402
 
-STAGES = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24]   # stage 2 (the typeface) is part of stage 3
+STAGES = [1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26]   # stage 2 (the typeface) is part of stage 3
 THEMES = os.path.join(ROOT, "x91_dump", "themes")
 LIST = os.path.join(THEMES, "themes.json")
 

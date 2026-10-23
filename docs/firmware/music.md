@@ -38,6 +38,17 @@ the path info and the list row to a result handler (song lists 0x181612ee, Playl
 0x18161238). Row results: 0x8601 play, 0x8605 to 0x8607 add to built-in list 1 to 3, 0x8608 remove, 0x8609 clear.
 Since stage 21 the two handler calls (0x1816102e, 0x18161092) go to new code first.
 
+Each option menu comes in five lists by what plays in the background (0x181610d4 reads 0x202fbc): nothing (21),
+music playing (22, "Now playing" on top), music paused (23, "Last played"), radio playing (24), radio paused (25);
+26 to 30 likewise for Playlists, 31 to 40 for the built-in playlists 2 and 3. A row is 20 bytes: child list (0x7fff
+none), text, sub-title text, icon (a `COMMON.STY` picture), routine, 0, the shared routine. Since stage 25 lists 21
+to 30 end in "Search" (text 44, icon 107, the routine 0x181613e7 of the built-in "Playlist 2" row, which returns
+0x8606): the lists sat back to back, so 21 to 30 were laid out anew in the room of 21 to 40, and 31 to 40 (unreachable
+since stage 19) point at the rows of 26 to 30. `MUSIC.STY` text 44, "Reached maximum number of 'Playlists' …" (only
+for a full built-in playlist), reads "Search" in English. Since stage 26 lists 26 to 30 have "Add songs" in front of
+"Search" (text 30, before "Clear [%s]?", asked only before clearing a built-in playlist; icon 15; the routine of the
+built-in "Playlist 3" row, 0x181613ef, which returns 0x8607).
+
 ## The playing screen
 
 | What | Where | Notes |
@@ -66,6 +77,7 @@ settings, Add to playlist, Remove from Playlist, Delete, Bookmarks).
 | 0x200030 | elapsed time (ms), the playing screen's copy |
 | 0x200116 | the playlist the Playlists list is in |
 | 0x200138, 0x20013c | app timer table pointer, count |
+| 0x20013d | the current app timer tag (the list control sets 0x84) |
 | 0x200140 | pointer to the program's message dispatcher |
 | 0x200162 | the status bar's background argument |
 | 0x200191 | last knob position (stage 9; a spare demo-mode byte) |
@@ -74,7 +86,9 @@ settings, Add to playlist, Remove from Playlist, Delete, Bookmarks).
 | 0x2003c0 | `g_browser_filepath`, the lists' browse path |
 | 0x200668 | the status bar's parts table |
 | 0x2006fc | `g_dir_browser`, the list control's browser state |
-| 0x200714 | the list control's own state (+21: draw mode) |
+| 0x200708 | the menu rows the list control puts on top (`dir_menu_title`; +2 their number) |
+| 0x200714 | the list control's own state (`dir_control_t`, {doc}`shared-code`) |
+| 0x200744 | the list control's rows of the page (`g_file_list`, 12 bytes each: extension, name length, name pointer) |
 | 0x10116c | the list control's list data (`listbox_private_t`) |
 
 ## Engine messages
@@ -132,6 +146,20 @@ step 1 (0, 31, 36, 42 … 186, 191). The only other copies of the table are in `
 - Only MP3 files play from a playlist.
 
 The firmware itself never writes `.m3u` files; since stage 18 new code does ({doc}`../code/new-code`).
+
+## MUSIC.LIB
+
+The library builder's song library (songs by their tags), 1,536,000 bytes on the player of 2026-10-21 with 907 songs,
+has the layout of `M3U.LIB` below. Stage 26 reads it for "Add songs" (`search.c`); the browser reads it for the song
+lists.
+
+| Where | Content |
+|---|---|
+| sector 0 | head: "MUSIC", number of songs (+8), first record's sector (+10, 1), then items of 28 bytes: "ALLSONG" with the sectors of All songs' order and its inverse (+0x24, +0x26), "ALBUM", "ARTIST", "GENRE" with their lists |
+| sector 1 on | song records of 256 bytes, numbered from 0: the name the lists show (UTF-16 with FF FE, ending within 56 bytes: the title, here the file name), artist (+0x38), album (+0x54), genre (+0x70), track (+0x8c), extension (+0x94), cluster and offset of the directory entry (+0x9c, +0xa0), folder chain (+0xa8, 73 bytes), sort keys (+0xf4) |
+| order's sector | All songs: u16 record numbers in the order the list shows them (by name), then its inverse |
+
+The browser hands a name out cut to its buffer: with the 52 bytes the lists use, FF FE and 24 characters.
 
 ## M3U.LIB
 

@@ -71,7 +71,11 @@ from build_stage18 import CFLAGS, BANK_TABLES, BANK_MAX, run, put_code  # noqa: 
 s20 = s23.s20
 s21 = s23.s21
 T = s1.T
-LIVE = os.path.join(HERE, "playlist")
+LIVE = os.path.join(HERE, "playlist", "stage24")  # the sources as this stage shipped them (stage 25 changed the live ones)
+# what the frozen sources gave when stage 24 (third build) was made: the playlist code's banks (address and bytes, in
+# bank order) and the list_box of each program (name, address and bytes)
+CODE_SHA = "de939e1462245f3955186682d316800f4e97b02286cfaf0fd9b0846a175c759b"
+LIST_BOX_SHA = "c912c515948674cd40c94b6898fcd0fb5875e33225bfc8e7101adcde70b5e902"
 ENGLISH = 2
 
 LISTS = 6                                        # COMMON.STY table of the list-box records (28 bytes each)
@@ -679,6 +683,15 @@ def main():
         lfi.put(name, bytes(ap))
     if sorted(n for n, *_ in placed) != sorted(PROGRAMS):
         sys.exit("list_box was not placed in every program of PROGRAMS")
+    code_sha = hashlib.sha256(b"".join(struct.pack("<I", b["addr"]) + b["code"]
+                                       for b in sorted(music_banks, key=lambda b: b["addr"]))).hexdigest()
+    box_sha = hashlib.sha256()
+    for name, addr, size, *_ in sorted(placed):
+        ap = lfi.get(name)
+        o = ap_dis.find(ap_dis.segments(ap)[0], addr)
+        box_sha.update(name.encode() + struct.pack("<I", addr) + ap[o:o + size])
+    if (code_sha, box_sha.hexdigest()) != (CODE_SHA, LIST_BOX_SHA):
+        sys.exit("the frozen stage 24 sources no longer give the stage 24 code (%s, %s)" % (code_sha, box_sha.hexdigest()))
     bars = headbar_soon(lfi, work)
     copies = []
     s14.refresh_copies(lfi, copies)
