@@ -25,7 +25,12 @@ extern uptr box_result;
 extern int list_test, bar_clears, last_clear_pic, last_clear_x, last_clear_y, cleared_first;
 #define PICKER_LINES 5
 extern char shown[6][64], last_message[256];
-extern int events[64], event_count, event_next;
+#define MAX_EVENTS 1024
+extern int events[MAX_EVENTS], event_count, event_next;
+extern u32 clock_ms;                                    /* now_ms(): each wait for a tick (delay_tick) is 10 ms */
+extern int created_over;                                /* creates of a name that is there already (refused) */
+extern int write_limit;                                 /* >= 0: writes left before the disk is full */
+int text_width(const u16 *t, int units);                /* as the display driver measures it (UI_STR_WIDTH) */
 
 /* stage 25: the search's screen, its keys and the rows it searches */
 #include <stdio.h>

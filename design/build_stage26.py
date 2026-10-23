@@ -35,7 +35,7 @@ from build_stage18 import CFLAGS  # noqa: E402
 
 s20, s21, s24 = s25.s20, s25.s21, s25.s24
 s20_plan = s20.plan
-LIVE = os.path.join(HERE, "playlist")
+LIVE = os.path.join(HERE, "playlist", "stage26")  # the sources as this stage shipped them (stage 27 changed the live ones)
 
 SOURCES = ("playlist.c", "library.c", "keys.c", "browse.c", "search.c")
 SEARCH_GROUPS = (s25.HOT,
@@ -60,6 +60,12 @@ ADD_TEXT, ADD_ICON = 30, 15                      # MUSIC.STY text; COMMON.STY pi
 ADD_FN = 0x181613ef                              # MUSIC.AP: mov r1, r0; movw r0, #0x8607; bx lr
 ADD_FN_CODE = bytes.fromhex("014648f207607047")
 STOCK_TEXT = "Clear [%s]?"
+CODE_SHA = {                                     # the placed code per theme, as the fourth build went to the player
+    "amber": "ac757838b4b1a0d84ac436333c0ce72c243b0abbd3489780adfa436ce8db722d",
+    "mint": "97da5ef2831a2c045f116d9b1a89223435d196bcd79bfabf1f4e4eba8b118699",
+    "ice": "2ae5adf10ef4718a1bde2230b9edaca096b9770d5fbaccd191b983eaf1037aea",
+    "berry": "3f138df8e132c2a226f3c59d355542bcaf01079f85341b9b573f39f683ccc129",
+}
 
 
 def stack_depth(work):
@@ -205,6 +211,11 @@ def main():
         print("  bank %#x: length %#x -> %#x (%s)" % (b["addr"], b["len"], b["new_len"],
                                                     ", ".join(s[6:].split(".")[0] for s in b["secs"])))
     print("the search's per-row functions in bank %#x" % hot)
+    code_sha = hashlib.sha256(b"".join(struct.pack("<I", b["addr"]) + b["code"]
+                                       for b in sorted(banks, key=lambda b: b["addr"]))).hexdigest()
+    print("code sha256 (%s): %s" % (s1.THEME, code_sha))
+    if CODE_SHA.get(s1.THEME) != code_sha:
+        sys.exit("the frozen stage 26 sources no longer give the stage 26 code for %s" % s1.THEME)
     bad = lfi.check()
     img = os.path.join(out, "x91_lfi_stage26.bin")
     with open(img, "wb") as f:

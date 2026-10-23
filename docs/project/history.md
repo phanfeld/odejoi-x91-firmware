@@ -38,9 +38,9 @@
 | 24 | `c793fc34…` | menu names wrong or cut off, empty top lines, no counter in album folders |
 | 24 rebuilt | `decde654…` | works, except the eBook list's name and the status bar's delay in sub-menus |
 | 24 rebuilt again | `efa340ee…` | eBook name fine; status bar much faster, but a short blink when a menu or list opens |
-| 24 rebuilt a third time | `82eed591…` | built, not yet flashed |
+| 24 rebuilt a third time | `82eed591…` | never flashed on its own; part of every stage 25 and 26 image |
 
-## 2026-10-23: search, adding songs
+## 2026-10-23: search, adding songs, naming playlists
 
 | Stage | Image (Berry) | Result |
 |---|---|---|
@@ -49,12 +49,14 @@
 | 26 | `00112ce2…` | "Add songs" works; after each add the screen first showed the digits typed and an empty line |
 | 26 rebuilt | `2a25f3eb…` | no digits, but with fewer than four matches the screen waited about 5 s (keys dead) after each add |
 | 26 rebuilt again | `ec287d08…` | the screen at once, keys at once; the new songs show in the playlist only after it is entered again |
-| 26, fourth build | `89137f1b…` | the list's number of rows set after an add; built, not yet flashed |
+| 26, fourth build | `89137f1b…` | works: the new songs show in the playlist at once |
+| 27 | `770fd5fe…` | "New playlist" and "Rename", the name typed on the keypad; built, not yet flashed |
 
-`x91_dump/themes/themes.json` lists the current image of each theme (stage 26, fourth build: Amber `76f68ef2…`,
-Mint `ded7d030…`, Ice `26612f9f…`, Berry `89137f1b…`). The images of stages 24 and 25 are unchanged (built from the frozen
-sources in `design/playlist/stage24/` and `stage25/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
-`e91c8f53…`, Berry `ee7d8549…`).
+`x91_dump/themes/themes.json` lists the current image of each theme (stage 27: Amber `61f6a930…`, Mint `d330bf0c…`,
+Ice `d19d983c…`, Berry `770fd5fe…`). The images of stages 24 to 26 are unchanged (built from the frozen sources in
+`design/playlist/stage24/`, `stage25/` and `stage26/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
+`e91c8f53…`, Berry `ee7d8549…`; stage 26, fourth build: Amber `76f68ef2…`, Mint `ded7d030…`, Ice `26612f9f…`, Berry
+`89137f1b…`).
 
 ## Early assumptions that were wrong
 

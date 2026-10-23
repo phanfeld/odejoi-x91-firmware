@@ -84,6 +84,11 @@ typedef struct {                         /* where a file is, as VFS_OFFSET repor
 #define LONG_CUT      (1 << 4)           /* bits 4-7: a character that does not fit is left out */
 #define LONG_DOTS     (3 << 4)           /* ... or the text ends in an ellipsis */
 #define NO_ARABIC     (1 << 15)
+/* Stage 27: a text's width (DRV_UI.DRV function 23 at 0x1186fb, the SDK's get_string_length): (strdesc_t *, max,
+   result or 0) returns the sum of the characters' widths from the font's own width function, stopping after the
+   first character past max; the string ends at a zero character or after the descriptor's length in bytes, and the
+   FF FE of UTF-16 counts no width. */
+#define UI_STR_WIDTH  23
 typedef struct { u16 x, y, w, h; } region_t;
 
 typedef struct {                         /* string_desc_t, 12 bytes */
@@ -135,6 +140,10 @@ typedef struct {                         /* dialog_com_data_t as the stock add r
 #define RESULT_CLR_FAVOR  0x8609
 #define RESULT_SEARCH     0x8606         /* stage 25's "Search" rows: the routine of the built-in "Playlist 2" (0x181613e7) */
 #define RESULT_ADD_SONGS  0x8607         /* stage 26's "Add songs" rows: the routine of the built-in "Playlist 3" (0x181613ef) */
+#define RESULT_NEW_LIST   RESULT_ADD_FAVOR1   /* stage 27's "New playlist" rows: the routine of the song lists' "Add to
+                                                 playlist" (0x181613df), which no Playlists row had before */
+#define RESULT_RENAME     0x860f         /* stage 27's "Rename" rows: a stock routine no menu row used (0x18181201; the
+                                            SDK's RESULT_ENTER_FAVOR_LIST) */
 
 /* The keys themselves, for a screen that uses all four directions (the menu key table maps only Up and Down):
    a gui message (8 bytes, SDK input_gui_msg_t) has its type at +0 (0 a key), the key at +2 and the key's event bits
@@ -162,6 +171,8 @@ typedef struct {                         /* dialog_com_data_t as the stock add r
 #define S_REMOVE_FROM     34             /* "Remove from Playlist" */
 #define S_REMOVE_ASK      35             /* "Remove [%s] from [%s]?" (in English rewritten in stage 21) */
 #define S_MOVE            29             /* "Move song" (English; stock "Clear playlist") */
+#define S_NAME_TAKEN      6              /* stage 27: "\"[%s]\" already exists" (English; stock: the question before adding
+                                            to a built-in playlist) */
 #define S_DELETE_ASK      (0x8000 | 15)  /* "\"[%s]\" delete?" (COMMON.STY) */
 #define S_DELETED         (0x8000 | 19)  /* "\"[%s]\" deleted!" */
 #define S_WAIT            (0x8000 | 47)  /* "Please wait..." */
@@ -211,6 +222,7 @@ enum { PLAY_STOPPED = 0, PLAY_PAUSED = 1, PLAY_PLAYING = 2, PLAY_AB = 3, PLAY_FA
 uptr vfs(uptr a, uptr b, uptr c, int cmd);
 uptr ui(uptr a, uptr b, uptr c, int cmd);
 void delay_tick(void);
+u32 now_ms(void);                        /* the system's millisecond counter */
 int get_gui_msg(void *msg);
 int get_app_msg(void *msg);
 u32 app_dispatch(void *msg);
@@ -279,6 +291,9 @@ static inline __attribute__((always_inline)) uptr vfs(uptr a, uptr b, uptr c, in
 #endif
 static inline __attribute__((always_inline)) uptr ui(uptr a, uptr b, uptr c, int cmd) { return FAR(UI_ENTRY, uptr (*)(uptr, uptr, uptr, int))(a, b, c, cmd); }
 static inline __attribute__((always_inline)) void delay_tick(void) { FAR(0x1102e1, uptr (*)(uptr, uptr, uptr, int))(1, 0, 0, 49); }
+/* the system's millisecond counter (svc 15 function 28, the SDK's sys_get_ab_timer, as the app timers read it at
+   MUSIC.AP 0x1104d8) */
+static inline __attribute__((always_inline)) u32 now_ms(void) { return (u32)FAR(0x1102e1, uptr (*)(uptr, uptr, uptr, int))(0, 0, 0, 28); }
 static inline __attribute__((always_inline)) int get_gui_msg(void *msg) { return FAR(0x110435, int (*)(void *))(msg); }
 static inline __attribute__((always_inline)) int get_app_msg(void *msg) { return FAR(0x11030d, int (*)(void *))(msg); }
 static inline __attribute__((always_inline)) u32 app_dispatch(void *msg) { return FAR(*(volatile u32 *)0x200140, u32 (*)(void *))(msg); }

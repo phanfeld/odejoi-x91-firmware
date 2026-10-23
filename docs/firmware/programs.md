@@ -49,7 +49,8 @@ Consequences, each found the hard way:
 No stock code of `MUSIC.AP` uses the 0x1000 window above its banks' lengths as data, so bank tails are safe for new code; the placement caps a grown bank at 0x800 bytes (`BANK_MAX`), well under the group's largest stock length.
 The same holds for the 0x1a00 window (0x101a00 to 0x101fff: the only constants of `MUSIC.AP` in that range are ids in
 a table of bank 0x183c1000, and no instruction of the group addresses its own tail); since stage 26 new code also
-grows 0x1a00-group banks, each up to 0x5f0 bytes, the group's longest stock bank.
+grows 0x1a00-group banks, each up to 0x5f0 bytes, the group's longest stock bank (3 of them in stage 26, 17 in stage
+27).
 
 ## Programs and how they start
 
@@ -96,7 +97,8 @@ The same stubs exist in every program, at other addresses: the display driver's 
 File-system commands (SDK `vfs_interface.h`, confirmed in use): 0 cd (`:` root, `\` up, `|` back onto the folder
 just left, `/` into the entry), 1 dir, 2 get name (UTF-16 with FF FE first, or an 8.3 name), 3 get/set the position
 (`file_dir_offset`, 0 get, 1 set), 4 make dir, 5 open (mode 2 = modify), 6 create, 7 close, 8 remove, 9 size,
-11 seek, 12 tell, 13 read, 14 write, 20 rename. The music program's mount handle is at 0x200020.
+11 seek, 12 tell, 13 read, 14 write, 20 rename (called by no stock program; the new code copies a file instead, stage
+27). The music program's mount handle is at 0x200020.
 
 The player gives a program only a few file handles; the browser and the engine hold some of their own. New code opens
 one file at a time.

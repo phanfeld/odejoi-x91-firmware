@@ -41,7 +41,7 @@ The table has 40 entries. Numbers 0 to 34 are the SDK's (`ui_op_e` in `display.h
 | 20 | 0x118027 | `UI_SET_BACKGD_COLOR` | background colour |
 | 21 | 0x0b080679 | `UI_SHOW_STRING` | draw a string in a region `(string, region, mode)` |
 | 22 | 0x03060c01 | `UI_ELLIPSIS_TO_LONGSTR` | |
-| 23 | 0x1186fb | `UI_GET_STRING_LENGTH` | |
+| 23 | 0x1186fb | `UI_GET_STRING_LENGTH` | `(string, max, result or 0)`: the sum of the characters' widths (the font's width function, as the string drawing has them), stopping after the first character past max; FF FE counts nothing; result: the width and bytes that fit (used since stage 27) |
 | 24 | 0x0b0604ab | `UI_GET_TEXT_LINE` | measure how much text fits a line; mode bit 1: do not end a line inside a word (a word is a run of A to Z, a to z and the straight apostrophe) |
 | 25 | 0x03080c4b | `UI_SET_DISPLAYBUF` | |
 | 26 | 0x03040d8b | `UI_UNICODE_TO_CHAR` | |

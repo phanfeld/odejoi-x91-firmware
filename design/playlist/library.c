@@ -348,6 +348,23 @@ int lib_list(uptr h, int list, place_t *p, u16 *name)
     return !p || (rd(h, at + R_CLUSTER, &p->cluster, 8) && rd(h, at + R_LAYER, p->layer, LAYER_SIZE));
 }
 
+int lib_set_list(uptr h, int list, const place_t *p, const u16 *name)
+{
+    u16 b[28];
+    u32 at = SECTOR + (u32)list * REC, ce[2];
+    int i;
+
+    if (list < 0 || (u32)list >= rd16(h, H_LISTS))
+        return 0;
+    set_bytes(b, 0, sizeof b);
+    b[0] = 0xfeff;
+    for (i = 0; i < LIST_NAME_MAX && name[1 + i]; i++)
+        b[1 + i] = name[1 + i];
+    ce[0] = p->cluster;
+    ce[1] = p->entry;
+    return wr(h, at + R_CLUSTER, ce, 8) && wr(h, at + R_LAYER, p->layer, LAYER_SIZE) && wr(h, at, b, sizeof b);
+}
+
 int lib_count(uptr h, int list)
 {
     u32 n = rd16(h, H_COUNT + 2 * (u32)list);

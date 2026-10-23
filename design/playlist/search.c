@@ -43,24 +43,7 @@
 #define PRED      12                     /* characters of the spelled letters (or digits) shown: the 72 pixels hold ten */
 #define SHOWN     4                      /* result lines */
 
-#define KEYS      12                     /* keys 0 to 8 are 1 to 9; then Del, 0, OK */
-#define K_DEL     9
-#define K_ZERO    10
-#define K_OK      11
-
-#define Y_QUERY   16                     /* the screen: status bar, query line, 4 result lines, 4 rows of keys */
-#define Y_LIST    32
-#define Y_KEYS    96
-#define LINE      16
-#define KEY_W     41                     /* a key, 41 x 15, one pixel apart (its texts start a row higher: draw_key) */
-#define KEY_H     15
-#define DIGIT_W   12                     /* a key's digit centred in its first 12 pixels, */
-#define LETTERS_W 30                     /* its letters in the last 30 ("wxyz" is 30 wide) */
-#define TITLE_X   22                     /* the status bar's title, where the menus have theirs (stage 24) */
-#define TITLE_W   76
 #define COUNT_X   80                     /* the number of matches, right-aligned up to x = 123 */
-
-#define TAG_SEARCH 0x8e                  /* the app timer tag while the search shows (the SDK's tags end at 0x8d) */
 
 enum { ENC_BYTE, ENC_WIDE, ENC_UTF8 };
 enum { ON_KEYS, ON_LIST };
@@ -312,7 +295,7 @@ static inline __attribute__((always_inline)) void get_rows(const search_t *st, u
 
 /* ------------------------------------------------------------------ drawing */
 
-static void fill(int x, int y, int w, int h, u32 colour)
+void fill(int x, int y, int w, int h, u32 colour)
 {
     region_t r;
 
@@ -328,8 +311,7 @@ static void fill(int x, int y, int w, int h, u32 colour)
    player's language (as the list's names come). colours: ON(pen, background). The driver paints a strip as wide as
    the text and 16 rows high in the background colour first (fw.h), so the region lies on that colour, or its last
    row is painted again afterwards. */
-#define ON(pen, back) ((u32)(pen) | (u32)(back) << 16)
-static void text(const void *s, int room, int x, int y, int w, u32 colours, u32 mode)
+void text(const void *s, int room, int x, int y, int w, u32 colours, u32 mode)
 {
     const u8 *b = s;
     strdesc_t d;
@@ -349,7 +331,7 @@ static void text(const void *s, int room, int x, int y, int w, u32 colours, u32 
 }
 
 /* Up to four ASCII characters packed in a word (the first in the low byte) put at w[n]; the new n. */
-static int put4(u16 *w, int n, u32 chars)
+int put4(u16 *w, int n, u32 chars)
 {
     for (; chars; chars >>= 8)
         w[n++] = (u16)(chars & 0xff);
@@ -371,18 +353,25 @@ static int put_number(u16 *w, int n, u32 v)
     return n;
 }
 
-static int digit_of(int k) { return k < K_DEL ? k + 1 : k == K_ZERO ? 0 : -1; }
+int digit_of(int k) { return k < K_DEL ? k + 1 : k == K_ZERO ? 0 : -1; }
 
-static void draw_key(const search_t *st, int k)
+void space_bar(int x, int y, int w, u32 colour)
+{
+    fill(x, y, w, 1, colour);
+    fill(x, y - 3, 1, 3, colour);
+    fill(x + w - 1, y - 3, 1, 3, colour);
+}
+
+void keypad_key(int k, int on, int labels)
 {
     u16 w[6];
-    int x = 1 + k % 3 * (KEY_W + 1), y = Y_KEYS + k / 3 * LINE, d = digit_of(k), on = st->focus == ON_KEYS && st->key == k, i;
-    u32 back = on ? COL_ACCENT : COL_SURFACE, fg = ON(on ? COL_ON_ACCENT : COL_TEXT, back),
-        fg2 = ON(on ? COL_ON_ACCENT : COL_TEXT2, back);
+    int x = 1 + k % 3 * (KEY_W + 1), y = Y_KEYS + k / 3 * LINE, d = digit_of(k), i;
+    u32 back = on ? COL_ACCENT : COL_SURFACE, pen2 = on ? COL_ON_ACCENT : COL_TEXT2, fg = ON(on ? COL_ON_ACCENT : COL_TEXT, back),
+        fg2 = ON(pen2, back);
 
     fill(x, y, KEY_W, KEY_H, back);
     w[0] = 0xfeff;
-    if (d < 2) {                                        /* 1, 0, Del, OK: alone in the middle */
+    if (d < 0 || (d < 2 && !labels)) {                  /* Del, OK, and the search's 1 and 0: alone in the middle */
         if (d >= 0)
             put4(w, 1, (u32)('0' + d));
         else
@@ -391,12 +380,24 @@ static void draw_key(const search_t *st, int k)
     } else {
         put4(w, 1, (u32)('0' + d));
         text(w, sizeof w, x, y - 1, DIGIT_W, fg, ALIGN_CENTRE | LONG_CUT);
-        for (i = 0; i < (d == 7 || d == 9 ? 4 : 3); i++)   /* 2 abc ... 7 pqrs, 8 tuv, 9 wxyz */
-            w[1 + i] = (u16)('a' + 3 * (d - 2) + (d > 7) + i);
-        w[1 + i] = 0;
-        text(w, sizeof w, x + KEY_W - LETTERS_W, y - 1, LETTERS_W, fg2, ALIGN_CENTRE | LONG_CUT);
+        if (!d) {                                       /* the name screen's 0: a space bar */
+            space_bar(x + KEY_W - LETTERS_W + SPACE_BAR_X, y + SPACE_BAR_Y, SPACE_BAR_W, pen2);
+        } else {
+            if (d == 1)                                 /* ... its 1: the first of its signs */
+                i = put4(w, 1, KEY1_SIGNS) - 1;
+            else
+                for (i = 0; i < (d == 7 || d == 9 ? 4 : 3); i++)   /* 2 abc ... 7 pqrs, 8 tuv, 9 wxyz */
+                    w[1 + i] = (u16)('a' + 3 * (d - 2) + (d > 7) + i);
+            w[1 + i] = 0;
+            text(w, sizeof w, x + KEY_W - LETTERS_W, y - 1, LETTERS_W, fg2, ALIGN_CENTRE | LONG_CUT);
+        }
     }
     fill(x, y - 1, KEY_W, 1, COL_BG);                   /* the row above, which the texts painted: centred in 15 rows */
+}
+
+static void draw_key(const search_t *st, int k)
+{
+    keypad_key(k, st->focus == ON_KEYS && st->key == k, 0);
 }
 
 static int searching(const search_t *st) { return st->qlen && st->pos < st->rows; }

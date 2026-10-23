@@ -1,7 +1,7 @@
 # ODEJOI X91 firmware
 
 Custom firmware for the ODEJOI X91 MP3 player (Actions ATJ2157). The stock firmware was dumped over USB and
-reverse-engineered; a new interface, **Graphite**, is built on top of it in stages (26 so far) by scripts that patch
+reverse-engineered; a new interface, **Graphite**, is built on top of it in stages (27 so far) by scripts that patch
 the stock image. A terminal tool dumps the firmware and flashes a theme.
 
 ![Main menu, Music menu, a playlist, the playing screen and the screensaver in the Berry theme](design/screens/berry.png)
