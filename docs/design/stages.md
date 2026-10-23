@@ -1,8 +1,12 @@
 # The stages
 
-Each stage is one builder, `design/build_stageN.py`, which takes the previous stage's image and writes the next one
-(stage 3 is built on stage 1; stage 2's typeface is part of it). The column "Code" marks stages that change program
-code. The {doc}`../project/history` page lists what went onto the player and when.
+Graphite was built in 27 stages, one builder each (`design/build_stageN.py`), every one taking the previous stage's
+image and writing the next (stage 3 was built on stage 1; stage 2's typeface was part of it). Each went onto the
+player and was tested before the next; {doc}`../project/history` lists what went onto the player and when.
+
+Release 1.0 is stage 27. Its build applies the final form of every change to the stock image in one go
+({doc}`../code/build-system`); the stage builders are in the git history. This page is the record of how the design
+came about; the column "Code" marks stages that changed program code.
 
 | Stage | Changes | Files | Code |
 |---|---|---|---|
@@ -49,7 +53,7 @@ stage 7 rewrote the start of the shared clock routine to draw one animation fram
 (`clock_sprite.S`, in seven programs, 432 input combinations each). The colour key of the keyed draw (0xb5b6) then
 explained damaged digits; stage 8 redrew them solid.
 
-**9 to 13: the playing screen.** Stage 9 (`music_progress.S`) stopped the knob's flicker; stage 11 rewrote the whole
+**9 to 13: the playing screen.** Stage 9 (`music_progress.S`, in the git history only) stopped the knob's flicker; stage 11 rewrote the whole
 time-and-bar routine (`music_playing.S`, 1336 combinations) and laid out the screen after the mock; stages 12 and 13
 corrected the play/pause pictures and moved the counter out of the status bar's corner.
 
@@ -85,7 +89,7 @@ lines below it, the keypad at the bottom. A chosen row opens as Select opens it,
 afterwards. The option lists got a "Search" row (text 44, icon 107, a stock routine that returns 0x8606) and were laid
 out anew in the room of the built-in playlists' options.
 
-```{figure} ../../design/stage25-preview.png
+```{figure} ../../design/history/stage25-preview.png
 :alt: The search screen in Berry: empty; 2-3-2 typed, spelling "Bea" with three artists; a result chosen; back on the keypad below the results; songs
 The search screen as the host test draws it (Berry, `design/playlist/host/render.py`; the status bar's marks are
 the firmware's and not drawn here).
@@ -98,7 +102,7 @@ the next song: it shows at once the letters and the chosen song, which Play adds
 the songs are found again; Return leaves, and the playlist shows the new songs. The code no longer fits the 0x1000 group's bank
 tails: the parts only "Add songs" runs went into tails of the 0x1a00 group.
 
-```{figure} ../../design/stage26-preview.png
+```{figure} ../../design/history/stage26-preview.png
 :alt: Add songs in Berry: "Sta" typed; at once after the sixth of eight was added; four of them found again; all found again
 "Add songs" as the host test draws it (Berry): 7-8-2 typed; at once after the sixth of eight "Wonder" songs was
 added, the chosen song on its line; four found again; all eight.
@@ -121,7 +125,7 @@ alone goes through a name with a "~" in front, since the file system takes the n
 longer fits the 0x1000 group's tails: the name screen, both actions, "Move song" and "Delete" went into tails of the
 0x1a00 group.
 
-```{figure} ../../design/stage27-preview.png
+```{figure} ../../design/history/stage27-preview.png
 :alt: The name screen in Berry: New playlist, empty; "Road Trip" with the p being typed; C typed by three presses of 2; Rename with FOCUS in capitals; Rename with the old name NothingMuch
 The name screen as the host test draws it (Berry): "New playlist", empty; "Road Trip", the p still being typed on 7
 (its row p q r s 7 below); three presses of 2 give C; "Rename" in capitals; "Rename" as it opens, the old name filled

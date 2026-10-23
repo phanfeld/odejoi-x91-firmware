@@ -53,15 +53,26 @@
 | 27 | `770fd5fe…` | typing works; the name's line misplaced: the mark of the letter being typed too wide and about 20 pixels too far right, the caret behind the third letter of a longer name, stray letters to the right of the mark (the width function was asked with type 0x7d and read the UTF-16 as single bytes) |
 | 27 rebuilt | `b1f169d1…` | works: the width asked with type 0x7f, the mark and the caret in place, no stray letters |
 
-`x91_dump/themes/themes.json` lists the current image of each theme (stage 27 rebuilt: Amber `5fb39a7f…`, Mint
-`2b084b26…`, Ice `7f935828…`, Berry `b1f169d1…`). The images of stages 24 to 26 are unchanged (built from the frozen sources in
-`design/playlist/stage24/`, `stage25/` and `stage26/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
-`e91c8f53…`, Berry `ee7d8549…`; stage 26, fourth build: Amber `76f68ef2…`, Mint `ded7d030…`, Ice `26612f9f…`, Berry
-`89137f1b…`).
+Stage 27 rebuilt in every theme: Amber `5fb39a7f…`, Mint `2b084b26…`, Ice `7f935828…`, Berry `b1f169d1…`. Up to then
+the images of stages 24 to 26 stayed reproducible from frozen copies of their sources (`design/playlist/stage24/`,
+`stage25/` and `stage26/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice `e91c8f53…`, Berry
+`ee7d8549…`; stage 26, fourth build: Amber `76f68ef2…`, Mint `ded7d030…`, Ice `26612f9f…`, Berry `89137f1b…`).
+
+## 2026-10-23: release 1.0
+
+| Step | Result |
+|---|---|
+| The 27 stage builders merged into one build, `design/build.py` with the parts in `design/graphite/` | every change applied in its final form to the stock image; code a later stage took out again is never placed; a build of all four themes takes about a minute (the chain took several) |
+| Compared with the stage 27 images | byte for byte the same in all four themes: Amber `5fb39a7f…`, Mint `2b084b26…`, Ice `7f935828…`, Berry `b1f169d1…` (`RELEASE` in `build.py`, `--check`) |
+| Removed | the stage builders, the frozen sources per stage, stage 9's `music_progress.S` and its checker (all in the git history); the stage previews moved to `design/history/` |
+
+The merged build keeps one oddity of the stage builders: in `CONFIG.TXT`, the readable copy of the settings that the
+firmware does not read, stage 5 wrote the six-tile menu into the commented-out line above the active one, which still
+lists the five tiles of stage 3. Correcting it would change only that file, and so the images' checksums.
 
 ## Early assumptions that were wrong
 
-Comments in older builders may still reflect these:
+Comments in the stage builders (in the git history) may still reflect these:
 
 - The screensaver clock is drawn by code, not by its layout (stage 6 → 7).
 - Pictures 345/346 are the brightness sun, not battery marks (stage 4 → 10).

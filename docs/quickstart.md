@@ -6,7 +6,7 @@ All commands run from the repository root.
 
 - Linux, Python 3.12 with pycairo (no Pillow, no numpy). Scripts are run with `python3 -I`.
 - `arm-none-eabi-gcc`, `-as`, `-ld`, `-objdump`, `-objcopy`, `-readelf` (GCC 13.2) for patches and new code.
-- The Ubuntu typeface installed as a system font (stage 2 renders it).
+- The Ubuntu typeface installed as a system font (the build renders the interface font from it).
 - `vectorcraft-cli` renders the SVG pictures; `ffmpeg` is used by the cover tool.
 - `libusb-1.0` development files, to build `actions_dump`.
 
@@ -39,22 +39,18 @@ flashing tool expect these in `x91_dump/`:
 
 {doc}`project/sources` lists every outside source with its exact version.
 
-## Rebuild every image
+## Build the images
 
 ```bash
-python3 -I design/build_theme.py
+python3 -I design/build.py
 ```
 
-This runs every stage builder for every theme (Amber, Mint, Ice, Berry) into `x91_dump/themes/<theme>/stageN/`,
-copies each theme's last stage to `x91_dump/themes/x91_lfi_<theme>.bin` and writes `x91_dump/themes/themes.json`,
-which the flashing tool reads. It takes a few minutes. The result is byte-for-byte reproducible. One theme only:
-`build_theme.py berry`.
-
-A single stage for the default theme (Amber), with the previous stage's output as input:
-
-```bash
-python3 -I design/build_stage24.py
-```
+This runs the host test of the new C code, then builds the image of every theme (Amber, Mint, Ice, Berry) from the
+stock image in one go: `x91_dump/themes/x91_lfi_<theme>.bin`, and `x91_dump/themes/themes.json`, which the flashing
+tool reads. It takes about a minute. The result is byte-for-byte reproducible; with `--check` the build stops unless
+every image is the release image (sha256 in `RELEASE` of `design/build.py` and in `CHANGELOG.md`). One theme only:
+`build.py berry`. Each theme's files, work files and a report of what was done are in `x91_dump/themes/<theme>/`
+({doc}`code/build-system`).
 
 ## Flash a theme
 
@@ -78,7 +74,8 @@ the player.
 
 ## Look at the firmware offline
 
-- Unpack an image: `x91_modify.Lfi(data).unpack(folder)`; every build writes its files to `x91_dump/stageN/unpacked/`.
+- Unpack an image: `x91_modify.Lfi(data).unpack(folder)`; the build writes each theme's files to
+  `x91_dump/themes/<theme>/unpacked/`.
 - Resources: `python3 -I firmware_analysis/tools/x91_preview.py UNPACKED_DIR OUT.html` renders every picture, text
   and layout scene into one HTML page.
 - Programs: `python3 -I firmware_analysis/tools/ap_dis.py FILE.AP OUT_DIR` writes a map and a Thumb disassembly with

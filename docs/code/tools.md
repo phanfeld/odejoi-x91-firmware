@@ -58,6 +58,9 @@ A02 family).
 
 ## Design
 
+`design/build.py`
+: Builds every theme's image from the stock image ({doc}`build-system`): `build.py [--out DIR] [--check] [THEME …]`.
+
 `design/x91_design.py`
 : Theme colours (`THEMES`), the icon set (`icon`), and the mock-up generator (`x91_design.py OUT_DIR`), which draws
   screens as SVG plus the texts the way the player draws them.

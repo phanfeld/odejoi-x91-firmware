@@ -4,8 +4,8 @@
 project = "ODEJOI X91 firmware"
 author = "ODEJOI X91 firmware project"
 copyright = "2026, ODEJOI X91 firmware project"
-release = "stage 24"
-version = "24"
+release = "1.0.0"
+version = "1.0"
 
 extensions = ["myst_parser"]
 myst_enable_extensions = ["colon_fence", "deflist", "attrs_inline"]

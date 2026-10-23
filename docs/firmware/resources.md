@@ -21,16 +21,16 @@ set refers to `COMMON.STY`**, without it to the program's own file: picture 0x80
 ### Pictures
 
 Picture table entries are 16 bytes: offset (u32), length (u32), type (u16), width (u16), height (u16). The data is
-RGB565, little-endian, row by row. A picture can be declared smaller than its data (`build_stage7.resize_picture`);
-the rest of its room stays unused. `build_stage1.set_picture(sty, index, data, w, h)` replaces a picture of the same
+RGB565, little-endian, row by row. A picture can be declared smaller than its data (`base.resize_picture`);
+the rest of its room stays unused. `base.set_picture(sty, index, data, w, h)` replaces a picture of the same
 size.
 
 **Sideways copies.** A picture that is the background of a scrolling text (title line, selected list row, time
 boxes) is stored twice: as usual, and directly behind it the same picture turned sideways (column by column,
 `copy[x * h + y] = picture[y * w + x]`), which the display driver reads while the text scrolls. The picture table
 knows only the first. Concerned: `MUSIC.STY` 11, 15, 32, 47, 49, 76 and `COMMON.STY` 212, 250, 292, 293, 414, 415
-(`build_stage14.with_copy(stock_file)` finds them). After changing such a picture call
-`build_stage14.refresh_copies(lfi, [])`.
+(`base.with_copy(stock_file)` finds them). The build brings every copy in line once all pictures are changed
+(`base.refresh_copies`).
 
 Transparency is a matter of the drawing call, not the picture: some calls treat black as transparent, others draw
 only pixels above a key value ({doc}`display-driver`). Pictures that must cover something use 0x0020, which looks
@@ -43,7 +43,7 @@ language block is a list of 8-byte entries (offset, length) pointing at UTF-16LE
 language id 2. The language setting selects a string table and a code page and nothing else.
 
 Texts are changed in English only and in place: the new text must fit the old one's room, and the entry's length is
-set to the new length (stages 21 and 24, `build_stage24.menu_texts`). Dialog texts break lines where they contain
+set to the new length (`base.set_english`). Dialog texts break lines where they contain
 CR LF; without them the dialog wraps where it can, also inside a name.
 
 ### Layout tables
@@ -64,7 +64,7 @@ The table directory has 11 entries of (offset, count), in this order:
 | 9 | slider | 48 bytes | four sub-record addresses, background picture with x and y, icon picture with x and y, … |
 | 10 | attribute box | | |
 
-`build_stage11.tables_of(sty)` returns the directory and `build_stage11.set_fields(sty, table, size, index, w3=…)`
+`base.tables_of(sty)` returns the directory and `base.set_fields(sty, table, size, index, w3=…)`
 changes 16-bit fields of a record.
 
 **Number box** (28 bytes): x, y, w, h, first digit picture, separator picture, digit width and separator width
@@ -135,7 +135,7 @@ The firmware reads only the list table and the lists; the `ACTMCGGM01` block is 
 switched on Sound settings in Settings from it). A row finds its sub-menu through its own child field, not through
 the links. The title text id is what the menu code shows as the menu's name (since stage 24 in the status bar).
 
-`build_stage21.rows_of(mcg, header_size, list)` returns a list's header and its items.
+`base.rows_of(mcg, header_size, list)` returns a list's header and its items.
 
 ## Fonts
 

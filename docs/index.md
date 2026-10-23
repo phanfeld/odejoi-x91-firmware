@@ -1,8 +1,8 @@
 # ODEJOI X91 firmware
 
 Documentation of the ODEJOI X91 MP3 player's stock firmware, as far as it has been worked out, and of the code that
-changes it: the stage builders that turn the stock image into the **Graphite** interface, the program patches, the
-new code written in C, and the tools that dump and flash the player.
+changes it: the build that turns the stock image into the **Graphite** interface (release 1.0), the program patches,
+the new code written in C, and the tools that dump and flash the player.
 
 The player is a 1.8-inch button player on an Actions ATJ2157. Nothing here comes from vendor documentation;
 addresses and formats were read from the firmware itself, with a partial SDK of the predecessor chip as a guide.

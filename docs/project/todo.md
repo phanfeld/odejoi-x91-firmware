@@ -15,5 +15,6 @@
 | A name for "New playlist" in "Add to playlist" | the picker's "New playlist" (playing screen, song lists) still makes "New playlist N"; it could open the name screen of stage 27 first |
 | "New playlist" with no playlists | the Playlists list with no `.m3u` cannot be opened, so neither can its options; "Add to playlist" makes the first one |
 | Letters beyond ASCII in names | the name screen types ASCII only; how the file system makes short names for other letters is not known |
+| `CONFIG.TXT` | the readable copy of the settings shows the six tiles in a commented-out line and the five tiles of stage 3 in the active one ({doc}`history`); the firmware does not read it, so a fix changes only the images' checksums |
 
 The flashing tool's separate Dump job has not been run on a device yet.

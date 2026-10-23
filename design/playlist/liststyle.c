@@ -19,12 +19,12 @@
  * On a full redraw it first clears the status bar's middle (fw.h, clear_bar): the list styles' background no longer
  * covers the bar, so that the battery and Bluetooth marks stay.
  *
- * build_stage24.py compiles this once per program with that program's addresses and choices, and puts it at the
+ * design/graphite/lists.py compiles this once per program with that program's addresses and choices, and puts it at the
  * free end of the control's own bank: new-code banks load at 0x101000, over the list data the control keeps at
  * 0x10116c, so it cannot go where the other new code is. One function, nothing else. */
 #include "fw.h"
 
-/* The music program's choices are the defaults; build_stage24.py sets all three for the other programs. */
+/* The music program's choices are the defaults; the build sets all three for the other programs. */
 #ifndef LIST_COUNTED
 #define LIST_COUNTED 1
 #endif

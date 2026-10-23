@@ -11,10 +11,10 @@ four more programs), called from a few re-aimed `bl` instructions and menu rows.
 - **Buffers on the stack.** The RAM from 0x101000 upward is where code banks are loaded; data there does not survive
   a call into another bank. The front program's stack has about 3.3 KB; the builders compute the deepest chain of the
   new code's own frames from the compiler's `.su` files and the call graph and refuse more than 1024 bytes
-  (`STACK_MAX`; the stage 23 code needs 956, the stage 25 code 984, the stage 26 code 1,000, the stage 27 code 1,008).
+  (`STACK_MAX` in `newcode.py`; the code of release 1.0 needs 1,008).
 - **Few calls between the new code's banks.** Every call into another bank of the 0x1000 group, and every return
   from it, loads a bank. Functions that run for every row or every character share one bank (the search's `HOT`
-  group in `build_stage25.py`; the builder stops if they are spread). Since stage 26 the code that only "Add songs"
+  group in `playlists.py`; the build stops if they are spread). Since stage 26 the code that only "Add songs"
   runs sits in banks of the 0x1a00 group, whose window lies above the 0x1000 group's: a call between the two loads no
   bank twice. Since stage 27 so do the name screen, "New playlist", "Rename", "Move song" and "Delete".
 - **One file open at a time** (the player's file handles are few).
@@ -25,7 +25,7 @@ four more programs), called from a few re-aimed `bl` instructions and menu rows.
   and its middle cleared first (`clear_bar` in `fw.h`) on a full redraw: since stage 24 these styles' background
   starts below the bar.
 
-Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inline -ffreestanding -fno-builtin
+Compiler flags (`newcode.CFLAGS`, and the theme's colours from `newcode.theme_flags`): `-mcpu=cortex-m4 -mthumb -Os -fno-inline -ffreestanding -fno-builtin
 -nostdlib -fno-strict-aliasing -fno-tree-loop-distribute-patterns -ffunction-sections -fdata-sections -fno-common
 -fstack-usage -Wall -Wextra -Werror`.
 
@@ -43,7 +43,6 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
 | `keys.c` | the Previous key: after 3 s of a song restart it (engine seek 0x317 with break point 0 between pause and resume), else the previous song; with the screen off by the engine's own time | `previous_key` (0x180a13b6), `standby_previous` (0x18b41a6e) |
 | `liststyle.c` | the file lists' top line: the counter inside one album or playlist, else the level's name; on a full redraw it first clears the status bar's middle | `list_box` (0x18661380, in five programs) |
 | `host/` | `mock.c`, `mock.h`, `test.c`: the test on the computer; `render.py`: pictures of the search screen from the test's draw log | |
-| `stage18/`, `stage20/`, `stage21/`, `stage23/`, `stage24/`, `stage25/`, `stage26/` | frozen copies of the sources as each stage shipped them | |
 
 `fw.h` in brief:
 
@@ -109,60 +108,46 @@ cc -std=c99 -Wall -Wextra -Werror -DHOST -g -fsanitize=address,undefined -I . -o
 ./host_test ../../x91_dump/device_files/2026-10-21/M3U.LIB
 ```
 
-The stage builders run it first (`build_stage20.host_test`) and stop if it fails.
+`design/build.py` runs it first (`newcode.host_test`) and stops if it fails.
 
 ## Placement into bank tails
 
 Every bank of `MUSIC.AP` sits in a 1 KB-aligned slot of the file with zeros behind it. New code goes into those
-tails, in banks of the 0x1000 group (they run at 0x101000):
+tails (`playlists.place_code`):
 
-1. **Compile** each source with one section per function (`compile_code`); record each section's size.
-2. **Take out** earlier new code: every 0x1000-group bank back to its stock length with zeros behind
-   (`build_stage21.take_out_code`).
-3. **Plan** (`build_stage20.plan`): the candidate banks are the 0x1000-group banks with free room up to their slot or
-   `BANK_MAX` (0x800). Functions in a `PINNED` entry go to a fixed bank (`previous_key` beside the key code at
-   0x180a1000); functions that call each other often (`GROUPS`) share a bank, because each call into another bank of
-   the group swaps banks; the rest go first-fit, largest first.
-4. **Link** (`build_stage20.link`) with a generated linker script that places each bank's sections at the bank's
-   address plus its old length (rounded to 4), and extract each bank's bytes.
-5. **Put** them in (`build_stage18.put_code`): check the tail is zeros, write, grow the bank's length in the table.
-6. **Point the callers** at the new entry points: re-aimed `bl`s (`build_stage20.thumb_bl`) and menu rows'
-   routine addresses (`MUSIC.MCG`). Before that, `build_stage23.old_targets` checks that each of them leads into the
-   old code.
+1. **Compile** each source with one section per function and the theme's colours (`newcode.compile_code`); record
+   each section's size. Measure the deepest stack chain (`newcode.stack_depth`; `always_inline` helpers are known by
+   their names: no frame of their own, their calls counted for their callers).
+2. **Plan** (`playlists.plan`). The code does not fit the free tails of the 0x1000 group (about 17.8 KB in pieces).
+   What only "Add songs", "New playlist", "Rename", "Move song" and "Delete" run (`FAR_GROUPS`, but for `move_page`,
+   which `list_draw` calls through a pointer) goes first into free tails of 0x1a00-group banks, each bank up to 0x5f0
+   bytes (that group's longest stock bank), the groups largest first, each into the fullest tail it fits whole, else
+   one function at a time. The rest goes into the 0x1000 group (`newcode.free_tails`: tails up to the slot or
+   `BANK_MAX`, 0x800): functions in `PINNED` to a fixed bank (`previous_key` beside the key code at 0x180a1000);
+   functions that call each other often (`NEAR_GROUPS`) share a bank, because each call into another bank of the
+   group swaps banks; the rest one by one, largest first, into the fullest bank it fits. The banks whose end holds
+   `menu_box` (placed before, `lists.py`) and the list control's bank are left out.
+3. **Link** (`newcode.link`) with a generated linker script that places each bank's sections at the bank's address
+   plus its old length (rounded to 4), and extract each bank's bytes.
+4. **Put** them in (`newcode.put_code`): check the tail is zeros, write, grow the bank's length in the table.
+5. **Point the callers** at the entry points: re-aimed `bl`s (`base.thumb_bl`) and the menu rows' routine addresses
+   (`MUSIC.MCG`). `playlists.callers_are_stock` first checks that each call is the stock one and that the stock
+   routines the new menu rows use are what they are taken for.
 
-Stage 23's code: 12,406 bytes in 25 bank tails, deepest stack chain 956 bytes. Stage 24 places it anew (12,418 bytes
-in 25 banks) and leaves out the banks that call the list box, whose ends hold `menu_box`. Stage 25 takes the playlist
-code out of its banks itself, leaving the three `menu_box` banks and the list control's bank as stage 24 left them
-(found by their list box calls into their own ends, and checked unchanged afterwards), and places it anew with the
-search: 16,516 bytes in 30 bank tails in Amber (16,504 in Berry; the theme's colours are in the code), deepest
-stack chain 984 bytes. Stage 26 (`build_stage26.py`) uses stage 25's `replace_code` with two changes:
+The 0x1a00 group runs at 0x101a00 and keeps its data below it (0x101800 to 0x1019ff); no stock code of `MUSIC.AP`
+keeps data in 0x101a00 to 0x101fff (the only constants in that range are ids in a table of bank 0x183c1000), and no
+instruction of the group addresses its own tail. A call from the 0x1000 group into it, or back, reloads nothing.
 
-- **The 0x1a00 group.** The 0x1000 group's free tails (17,784 bytes) no longer hold all the code (about 18,200
-  bytes). The groups only "Add songs" runs (`FAR_GROUPS`: reading `MUSIC.LIB` rows, the rest of the `MUSIC.LIB`
-  code, the add itself) go into free tails of 0x1a00-group banks, each bank up to 0x5f0 bytes, that group's longest
-  stock bank, so the code stays inside RAM the program already loads banks into. That group runs at 0x101a00 and
-  keeps its data below it (0x101800 to 0x1019ff); no stock code of `MUSIC.AP` keeps data in 0x101a00 to 0x101fff
-  (the only constants in that range are ids in a table of bank 0x183c1000), and no instruction of the group
-  addresses its own tail. A call from the 0x1000 group into it, or back, reloads nothing.
-- **The stack measured right.** The older builders' function pattern took `static inline
-  __attribute__((always_inline)) int f(` for a function named `__attribute__`; `build_stage26.stack_depth` knows such
-  helpers by their names (no frame of their own, their calls counted for their callers).
-
-Stage 26: 18,394 bytes in 35 banks in Amber (18,380 in 34 in Berry), of them 1,690 in three 0x1a00-group banks;
-deepest stack chain 1,000 bytes.
-
-Stage 27 (`build_stage27.py`) takes stage 26's code out of its three 0x1a00-group banks first (`take_out_far`;
-`replace_code` takes it out of the 0x1000 group's only) and places everything anew. The 0x1000 group's tails would
-hold 1.9 KB more in all, but in pieces too small for `remove_line`, so "Move song" (but for `move_page`, which
-`list_draw` calls through a pointer) and "Delete" went into the 0x1a00 group too, with the name screen, "New
-playlist" and "Rename", in groups that each fit one tail (up to 920 bytes), placed largest first. 22,798 bytes in 45
-banks in Berry, of them 7,802 in 17 banks of the 0x1a00 group; deepest stack chain 1,008 bytes (the search under "Add
-songs" or "New playlist"; `m3u_option` keeps the playlist's record number in its frame now).
+Release 1.0: 22,798 bytes in 45 banks in Berry, of them 7,802 in 17 banks of the 0x1a00 group; deepest stack chain
+1,008 bytes (the search under "Add songs" or "New playlist"; `m3u_option` keeps the playlist's record number in its
+frame). `THEME/build.txt` lists every bank and its functions. How the code grew: 12,406 bytes in 25 tails at stage
+23, 16,516 in 30 at stage 25 (the search), 18,394 in 35 at stage 26, when the 0x1000 group's tails no longer held
+it all.
 
 ## liststyle.c: code in a 0x1200 bank
 
 `list_box` runs while the list control's data at 0x10116c is in use, so it cannot sit in a 0x1000 bank.
-`build_stage24.place_list_box` compiles it on its own for each of `MUSIC.AP`, `BROWSER.AP`, `EBOOK.AP`, `VIDEO.AP`
+`lists.place_list_box` compiles it on its own for each of `MUSIC.AP`, `BROWSER.AP`, `EBOOK.AP`, `VIDEO.AP`
 and `PICTURE.AP`, with that program's addresses read from its copy of the list control:
 
 | Define | Taken from | Meaning |
@@ -176,9 +161,8 @@ It must compile to one section (`-fno-tree-switch-conversion` keeps the list-typ
 data section), is linked at the end of the control's own bank (0x18661514), checked to fit both the bank's file
 slot and 0x3b8 (the group's largest stock bank), and the control's call at 0x18661380 is re-aimed at it. The music
 version is 160 of the 164 bytes free; it reads each field of the browser state once (`list_level()` returns a
-plain pointer for that reason). `take_out_code` stops at this bank (only 0x1000-group banks may be longer than
-stock); stage 25 therefore takes the playlist code out with its own `replace_code`, which keeps this bank and the
-`menu_box` banks.
+plain pointer for that reason). `list_box` and `menu_box` are placed before the playlist code, whose placement
+leaves their banks out and checks afterwards that they are unchanged.
 
 The rule `list_box` applies:
 
@@ -196,7 +180,7 @@ the hidden built-in "Playlist 2" row and returns 0x8606; `list_option` and `m3u_
 which works on whatever level the list shows (`list_level()`: lists below, songs).
 
 **The screen** is drawn by the code itself, with the display driver's fill and string functions and the theme's
-colours (compiled in: `build_stage25.py` passes `-DCOL_BG` … `-DCOL_ON_ACCENT` from `build_stage1.T`). Rows of 16
+colours (compiled in: `newcode.theme_flags` passes `-DCOL_BG` … `-DCOL_ON_ACCENT` from `base.T`). Rows of 16
 pixels: the status bar (switched on, its middle cleared, "Search" where the menus have their title), the query line
 (the letters the first match spells, or the digits typed while nothing is found yet; the number of matches, or
 "place/number" on the results; an ellipsis while the search goes on), four result lines, and the keypad at the bottom
