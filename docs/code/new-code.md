@@ -47,7 +47,7 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
 | Group | Names |
 |---|---|
 | File system (`svc 17`) | `vfs(a, b, c, cmd)`; `place_t` (folder chain and directory entry), `VFS_*` commands |
-| Display (`svc 6`) | `ui(a, b, c, fn)`; `strdesc_t`, `listbox_t`, `style_t`, `dialog_t`; style ids `STYLE_PICKER` 0x6004, `STYLE_DIR` 0x6000, `STYLE_COUNTED` 0x6003, `STYLE_NAMED` 0x6005; for a screen of its own `UI_DC_GET`, `UI_CLEAR` (fill a `region_t`), `UI_PEN`, `UI_BACKGD`, `UI_STRING` and the string modes (`DRAW_DOTS`, `ALIGN_*`, `LONG_CUT`, `LONG_DOTS`) |
+| Display (`svc 6`) | `ui(a, b, c, fn)`; `strdesc_t`, `listbox_t`, `style_t`, `dialog_t`; style ids `STYLE_PICKER` 0x6004, `STYLE_DIR` 0x6000, `STYLE_COUNTED` 0x6003, `STYLE_NAMED` 0x6005; for a screen of its own `UI_DC_GET`, `UI_CLEAR` (fill a `region_t`), `UI_PEN`, `UI_BACKGD`, `UI_STRING` and the string modes (`DRAW_COLOUR`, `ALIGN_*`, `LONG_CUT`, `LONG_DOTS`) |
 | Keys and results | `get_gui_msg`, `get_app_msg`, `app_dispatch`, `key_mapping`; `EV_*` events, `RESULT_*` codes (`RESULT_SEARCH` 0x8606); the keys themselves, `KEY_*`, and their event bits `KT_*` |
 | List control | `dir_control` (its state, `dirctl_t`, 0x200714), `menu_rows` (the menu rows on top, 0x20070a), `dir_select` (its Select, 0x18681200 with 0x2704), `timer_tag` (0x20013d) |
 | Messages | `message_box`, `string_format`, `dialog`, `dialog_text`; text ids `S_*` of `MUSIC.STY` and `COMMON.STY` |
@@ -68,7 +68,10 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
   engine (status, pause, resume, seek, time) and the list levels for `list_box`;
 - for the search (stage 25): the keys as the key driver sends them (key and event bits), stretches without keys in
   which the search goes on, the volume pop-up and system messages; a model of the texts on the screen and the fills
-  that cover them; the list control's state and its Select, which refuses a state that does not agree with itself;
+  that cover them, and of the pixels: a text counts as painting its whole region in its background colour, and
+  whenever the search waits for a key the screen below the status bar must be the design's layout, both with the
+  texts and by the fills alone (so no text reaches out of its place or is needed to complete a shape); the list
+  control's state and its Select, which refuses a state that does not agree with itself;
   rows read per call as the library reads them (a name cut to its buffer, two zeros). With `SEARCH_SCREENS=FILE`
   the test writes every drawing call and marked moments to FILE; `host/render.py IMAGE FILE DIR` draws them with the
   player's own typeface.
@@ -76,7 +79,8 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
 Deliberately broken versions of the code (wrong copy direction, users not renumbered, order kept, no question,
 a batch stopping after one song, a missing layer check, …; for the search a letter on the wrong key, no skipping of
 signs, matches inside words, marks kept after Return, rows not unmarked, the list not moved, the timer tag kept, Up
-and Down not crossing between keypad and results, …) all fail it. Compile and run it by hand:
+and Down not crossing between keypad and results, a text on the wrong background or reaching past its key, a gap row
+not painted again, cut corners, …) all fail it. Compile and run it by hand:
 
 ```bash
 cd design/playlist
@@ -110,7 +114,7 @@ Stage 23's code: 12,406 bytes in 25 bank tails, deepest stack chain 956 bytes. S
 in 25 banks) and leaves out the banks that call the list box, whose ends hold `menu_box`. Stage 25 takes the playlist
 code out of its banks itself, leaving the three `menu_box` banks and the list control's bank as stage 24 left them
 (found by their list box calls into their own ends, and checked unchanged afterwards), and places it anew with the
-search: 16,482 bytes in 30 bank tails in Amber (16,498 in Berry; the theme's colours are in the code), deepest
+search: 16,516 bytes in 30 bank tails in Amber (16,504 in Berry; the theme's colours are in the code), deepest
 stack chain 984 bytes.
 
 ## liststyle.c: code in a 0x1200 bank
@@ -154,8 +158,14 @@ colours (compiled in: `build_stage25.py` passes `-DCOL_BG` … `-DCOL_ON_ACCENT`
 pixels: the status bar (switched on, its middle cleared, "Search" where the menus have their title), the query line
 (the letters the first match spells, or the digits typed while nothing is found yet; the number of matches, or
 "place/number" on the results; an ellipsis while the search goes on), four result lines, and the keypad at the bottom
-in four rows of three 41 x 15 keys (digit in the text colour, letters in the second text colour, the chosen key in the
-accent). The scrolling timer of the list's chosen row would draw over the screen: while it shows, the program's timer
+in four rows of three 41 x 15 keys, one pixel apart (digit in the text colour, letters in the second text colour, the
+chosen key in the accent). Texts are drawn with fill mode 1: the driver paints a strip as wide as the text and 16 rows
+high in the background colour, then the letters (row 15 stays empty for Latin letters). Each text lies on a fill of
+its background colour, and the one-pixel rows its strip reaches are painted again after it: the row above a key (its
+texts sit one row higher, to be centred in 15 rows), the row below the chosen result line, the query's underline.
+Stage 25 as first flashed used mode 3, "only the dots", which leaves the strip as the previous string left it: stale
+letters showed above the keys, the underline broke under the typed letters, and the keys' edges looked uneven. The
+scrolling timer of the list's chosen row would draw over the screen: while it shows, the program's timer
 tag (0x20013d) is 0x8e, so only timers tagged 0xff fire, and the old tag and colours come back afterwards.
 
 **Keys** are read raw (the menu key table maps only Up and Down): Up, Down, Previous, Next move on the keypad, Play

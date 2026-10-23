@@ -5,8 +5,9 @@ The host test writes every fill, string and picture the search asks the display 
 SEARCH_SCREENS, with "snapshot N" where a test marks a moment. This replays the log on a 128 x 160 screen with the
 player's own typeface (UNICODE.FON of a firmware image) and writes snapshot-N.png for each mark. The driver's text
 rules are followed as far as they are known: a region 16 rows high, alignment within its width, characters that do
-not fit left out (or an ellipsis), only the glyph's dots drawn. The status bar's marks (battery, card, Bluetooth) are
-the firmware's own drawing and are not in the log.
+not fit left out (or an ellipsis), a strip as wide as the text and 16 rows high painted in the background colour
+first (fill mode 1). The status bar's marks (battery, card, Bluetooth) are the firmware's own drawing and are not in
+the log.
 
 usage: render.py IMAGE DRAW_LOG OUT_DIR [SCALE]
 """
@@ -19,7 +20,7 @@ sys.path.insert(0, os.path.join(HERE, "..", "..", "..", "firmware_analysis", "to
 import x91_modify as xm  # noqa: E402
 
 W, H = 128, 160
-DOTS, CENTRE, RIGHT, CUT, ELLIPSIS = 3, 1 << 2, 2 << 2, 1 << 4, 3 << 4
+CENTRE, RIGHT, ELLIPSIS = 1 << 2, 2 << 2, 3 << 4
 
 
 def rgb(v):
@@ -48,7 +49,7 @@ class Screen:
                 if bits & 0x8000 >> col and 0 <= x + col < W and 0 <= y + row < H:
                     self.px[y + row][x + col] = rgb(colour)
 
-    def text(self, x, y, w, colour, mode, s):
+    def text(self, x, y, w, colour, back, mode, s):
         width = sum(self.advance(c) for c in s)
         if width > w and mode & 0xf0:
             tail = "…" if mode & 0xf0 == ELLIPSIS else ""
@@ -58,6 +59,7 @@ class Screen:
             s += tail
             width = sum(self.advance(c) for c in s)
         x += (w - width) // 2 if mode & 0xc == CENTRE else w - width if mode & 0xc == RIGHT else 0
+        self.fill(x, y, width, 16, back)
         for c in s:
             self.glyph(c, x, y, colour)
             x += self.advance(c)
@@ -97,8 +99,8 @@ def main():
         if f[0] == "fill":
             screen.fill(*(int(v, 0) for v in f[1:6]))
         elif f[0] == "text":
-            x, y, w, h, colour, mode, lang = (int(v, 0) for v in f[1:8])
-            screen.text(x, y, w, colour, mode, decode(lang & 0xff, f[8] if len(f) > 8 else ""))
+            x, y, w, h, colour, back, mode, lang = (int(v, 0) for v in f[1:9])
+            screen.text(x, y, w, colour, back, mode, decode(lang & 0xff, f[9] if len(f) > 9 else ""))
         elif f[0] == "picture":
             if int(f[1], 0) == 0x8000 | 127:                   # COMMON.STY 127: the status bar's middle, black
                 screen.fill(int(f[2]), int(f[3]), 81, 16, 0)

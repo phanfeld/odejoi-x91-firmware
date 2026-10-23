@@ -48,23 +48,13 @@
 #define Y_LIST    32
 #define Y_KEYS    96
 #define LINE      16
-#define KEY_W     41                     /* a key, 41 x 15, one pixel apart */
+#define KEY_W     41                     /* a key, 41 x 15, one pixel apart (its texts start a row higher: draw_key) */
 #define KEY_H     15
-#define DIGIT_W   12                     /* a key's digit centred in its first 12 pixels, its letters in the rest */
+#define DIGIT_W   12                     /* a key's digit centred in its first 12 pixels, */
+#define LETTERS_W 30                     /* its letters in the last 30 ("wxyz" is 30 wide) */
 #define TITLE_X   22                     /* the status bar's title, where the menus have theirs (stage 24) */
 #define TITLE_W   76
 #define COUNT_X   80                     /* the number of matches, right-aligned up to x = 123 */
-
-/* The theme's colours as RGB565; build_stage25.py passes the theme's own, these are Amber's. */
-#ifndef COL_BG
-#define COL_BG        0x0000
-#define COL_SURFACE   0x18e4
-#define COL_LINE      0x2987
-#define COL_TEXT      0xf7be
-#define COL_TEXT2     0x8cb4
-#define COL_ACCENT    0xfd80
-#define COL_ON_ACCENT 0x0862
-#endif
 
 #define TAG_SEARCH 0x8e                  /* the app timer tag while the search shows (the SDK's tags end at 0x8d) */
 
@@ -289,16 +279,12 @@ static void fill(int x, int y, int w, int h, u32 colour)
     ui((uptr)&r, 0, 0, UI_CLEAR);
 }
 
-/* a panel with its corners cut, as the design's rounded ones look at this size */
-static void panel(int x, int y, int w, int h, u32 colour)
-{
-    fill(x + 1, y, w - 2, h, colour);
-    fill(x, y + 1, w, h - 2, colour);
-}
-
 /* A text of one line in a region 16 pixels high: UTF-16 with FF FE, UTF-8 with its mark, or one-byte text in the
-   player's language (as the list's names come); only its dots are drawn. */
-static void text(const void *s, int room, int x, int y, int w, u32 colour, u32 mode)
+   player's language (as the list's names come). colours: ON(pen, background). The driver paints a strip as wide as
+   the text and 16 rows high in the background colour first (fw.h), so the region lies on that colour, or its last
+   row is painted again afterwards. */
+#define ON(pen, back) ((u32)(pen) | (u32)(back) << 16)
+static void text(const void *s, int room, int x, int y, int w, u32 colours, u32 mode)
 {
     const u8 *b = s;
     strdesc_t d;
@@ -312,8 +298,9 @@ static void text(const void *s, int room, int x, int y, int w, u32 colour, u32 m
     r.y = (u16)y;
     r.w = (u16)w;
     r.h = LINE;
-    ui(colour, 0, 0, UI_PEN);
-    ui((uptr)&d, (uptr)&r, DRAW_DOTS | NO_ARABIC | mode, UI_STRING);
+    ui(colours & 0xffff, 0, 0, UI_PEN);
+    ui(colours >> 16, 0, 0, UI_BACKGD);
+    ui((uptr)&d, (uptr)&r, DRAW_COLOUR | NO_ARABIC | mode, UI_STRING);
 }
 
 /* Up to four ASCII characters packed in a word (the first in the low byte) put at w[n]; the new n. */
@@ -345,10 +332,10 @@ static void draw_key(const search_t *st, int k)
 {
     u16 w[6];
     int x = 1 + k % 3 * (KEY_W + 1), y = Y_KEYS + k / 3 * LINE, d = digit_of(k), on = st->focus == ON_KEYS && st->key == k, i;
-    u32 fg = on ? COL_ON_ACCENT : COL_TEXT, fg2 = on ? COL_ON_ACCENT : COL_TEXT2;
+    u32 back = on ? COL_ACCENT : COL_SURFACE, fg = ON(on ? COL_ON_ACCENT : COL_TEXT, back),
+        fg2 = ON(on ? COL_ON_ACCENT : COL_TEXT2, back);
 
-    fill(x, y, KEY_W, KEY_H, COL_BG);
-    panel(x, y, KEY_W, KEY_H, on ? COL_ACCENT : COL_SURFACE);
+    fill(x, y, KEY_W, KEY_H, back);
     w[0] = 0xfeff;
     if (d < 2) {                                        /* 1, 0, Del, OK: alone in the middle */
         if (d >= 0)
@@ -356,57 +343,60 @@ static void draw_key(const search_t *st, int k)
         else
             put4(w, 1, k == K_DEL ? 'D' | 'e' << 8 | 'l' << 16 : 'O' | 'K' << 8);
         text(w, sizeof w, x, y - 1, KEY_W, d >= 0 ? fg : fg2, ALIGN_CENTRE | LONG_CUT);
-        return;
+    } else {
+        put4(w, 1, (u32)('0' + d));
+        text(w, sizeof w, x, y - 1, DIGIT_W, fg, ALIGN_CENTRE | LONG_CUT);
+        for (i = 0; i < (d == 7 || d == 9 ? 4 : 3); i++)   /* 2 abc ... 7 pqrs, 8 tuv, 9 wxyz */
+            w[1 + i] = (u16)('a' + 3 * (d - 2) + (d > 7) + i);
+        w[1 + i] = 0;
+        text(w, sizeof w, x + KEY_W - LETTERS_W, y - 1, LETTERS_W, fg2, ALIGN_CENTRE | LONG_CUT);
     }
-    put4(w, 1, (u32)('0' + d));
-    text(w, sizeof w, x, y - 1, DIGIT_W, fg, ALIGN_CENTRE | LONG_CUT);
-    for (i = 0; i < (d == 7 || d == 9 ? 4 : 3); i++)   /* 2 abc ... 7 pqrs, 8 tuv, 9 wxyz */
-        w[1 + i] = (u16)('a' + 3 * (d - 2) + (d > 7) + i);
-    w[1 + i] = 0;
-    text(w, sizeof w, x + DIGIT_W - 1, y - 1, KEY_W - DIGIT_W + 3, fg2, ALIGN_CENTRE | LONG_CUT);
+    fill(x, y - 1, KEY_W, 1, COL_BG);                   /* the row above, which the texts painted: centred in 15 rows */
 }
 
 static int searching(const search_t *st) { return st->qlen && st->pos < st->rows; }
 
-/* The number of matches (on the results: the chosen one's place too), with an ellipsis while the search goes on. */
+/* The number of matches (on the results: the chosen one's place too), with an ellipsis while the search goes on; then
+   the line under the query, below the descenders, in the accent while the keys type into it: after the texts of the
+   query line, whose strips reach its row. */
 static void draw_count(search_t *st)
 {
     u16 w[12];                                          /* FF FE, "4000/4000", the ellipsis, 0 */
     int n = 1;
 
     st->counted = st->found * 2 + searching(st);
-    fill(COUNT_X, Y_QUERY, 124 - COUNT_X, LINE - 2, COL_BG);
-    if (!st->qlen)
-        return;
-    w[0] = 0xfeff;
-    if (st->focus == ON_LIST && st->found) {
-        n = put_number(w, n, (u32)st->sel + 1);
-        w[n++] = '/';
+    fill(COUNT_X, Y_QUERY, 124 - COUNT_X, LINE, COL_BG);
+    if (st->qlen) {
+        w[0] = 0xfeff;
+        if (st->focus == ON_LIST && st->found) {
+            n = put_number(w, n, (u32)st->sel + 1);
+            w[n++] = '/';
+        }
+        if (st->found || !searching(st))
+            n = put_number(w, n, (u32)st->found);
+        if (searching(st))
+            w[n++] = 0x2026;
+        w[n] = 0;
+        text(w, sizeof w, COUNT_X, Y_QUERY, 124 - COUNT_X, ON(COL_TEXT2, COL_BG), ALIGN_RIGHT | LONG_CUT);
     }
-    if (st->found || !searching(st))
-        n = put_number(w, n, (u32)st->found);
-    if (searching(st))
-        w[n++] = 0x2026;
-    w[n] = 0;
-    text(w, sizeof w, COUNT_X, Y_QUERY, 124 - COUNT_X, COL_TEXT2, ALIGN_RIGHT | LONG_CUT);
+    fill(4, Y_QUERY + LINE - 1, 120, 1, st->focus == ON_KEYS ? COL_ACCENT : COL_LINE);
 }
 
-/* The query line: the letters the first match spells, else the digits typed; the line under it, in the accent while
-   the keys type into it. The count is drawn by the callers (after the first match the search draws it). */
+/* The query line: the letters the first match spells, else the digits typed. The count and the line under both are
+   drawn by the callers (after the first match the search draws them). */
 static void draw_query(search_t *st)
 {
     int i;
 
-    fill(0, Y_QUERY, 128, LINE, COL_BG);
-    fill(4, Y_QUERY + LINE - 1, 120, 1, st->focus == ON_KEYS ? COL_ACCENT : COL_LINE);   /* below the descenders */
+    fill(0, Y_QUERY, COUNT_X, LINE, COL_BG);
     if (st->found) {
-        text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, COL_TEXT, ALIGN_LEFT | LONG_CUT);
+        text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, ON(COL_TEXT, COL_BG), ALIGN_LEFT | LONG_CUT);
     } else if (st->qlen) {                              /* nothing spelled yet: the digits, in its place */
         st->pred[0] = 0xfeff;
         for (i = 0; i < st->qlen; i++)
             st->pred[1 + i] = (u16)('0' + st->q[i]);
         st->pred[1 + i] = 0;
-        text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, COL_TEXT2, ALIGN_LEFT | LONG_CUT);
+        text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);
     }
 }
 
@@ -417,11 +407,13 @@ static void draw_line(const search_t *st, int i, const u8 *name)
 
     fill(0, y, 128, LINE, COL_BG);
     if (on) {
-        panel(1, y, 126, LINE - 1, COL_SURFACE);
+        fill(1, y, 126, LINE - 1, COL_SURFACE);
         fill(3, y + 3, 2, 9, COL_ACCENT);
     }
     if (name)
-        text(name, NAMELEN, 8, y, 116, COL_TEXT, ALIGN_LEFT | LONG_DOTS);
+        text(name, NAMELEN, 8, y, 116, ON(COL_TEXT, on ? COL_SURFACE : COL_BG), ALIGN_LEFT | LONG_DOTS);
+    if (on)
+        fill(0, y + LINE - 1, 128, 1, COL_BG);          /* the row below the panel, which the text painted */
 }
 
 /* The result line of match m (an empty line past the matches), if it is shown. */
@@ -448,7 +440,7 @@ static void draw_results(search_t *st)
         w[0] = 0xfeff;
         put4(w, put4(w, put4(w, 1, 'N' | 'o' << 8 | ' ' << 16 | 'm' << 24), 'a' | 't' << 8 | 'c' << 16 | 'h' << 24),
              'e' | 's' << 8);
-        text(w, sizeof w, 8, Y_LIST, 116, COL_TEXT2, ALIGN_LEFT | LONG_CUT);
+        text(w, sizeof w, 8, Y_LIST, 116, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);
     }
 }
 
@@ -461,7 +453,7 @@ static void draw_all(search_t *st)
     clear_bar();
     w[0] = 0xfeff;
     put4(w, put4(w, 1, 'S' | 'e' << 8 | 'a' << 16 | 'r' << 24), 'c' | 'h' << 8);
-    text(w, sizeof w, TITLE_X, 0, TITLE_W, COL_TEXT2, ALIGN_LEFT | LONG_CUT);
+    text(w, sizeof w, TITLE_X, 0, TITLE_W, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);   /* the bar's middle: black */
     fill(0, LINE, 128, 160 - LINE, COL_BG);
     draw_query(st);
     draw_count(st);

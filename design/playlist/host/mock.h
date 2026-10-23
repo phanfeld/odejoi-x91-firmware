@@ -30,7 +30,7 @@ extern int events[64], event_count, event_next;
 /* stage 25: the search's screen, its keys and the rows it searches */
 #include <stdio.h>
 #define MAX_TEXTS 48
-struct screen_text { int x, y, w; u32 colour, mode; char s[64]; };
+struct screen_text { int x, y, w; u32 colour, back, mode; char s[64]; };
 extern struct screen_text texts[MAX_TEXTS];
 extern int text_count, fills, strings, tag_while_drawing;
 extern u32 pen, backgd;
@@ -44,6 +44,7 @@ extern FILE *draw_log;
 #define SNAP(n) (SNAP_EVENT | (n))
 #define APP(r) (APP_EVENT | (r))
 extern int raw_keys, idle_left, volume_popups;
+extern void (*screen_check)(void);                      /* called when the search waits for a key after drawing */
 #define BROWSE_NAMES 2
 #define MAX_NAME_ROWS 4200
 struct name_row { u8 b[64]; int n; };
@@ -55,6 +56,7 @@ extern int menu_count, selects, selected_row;
 const char *text_at(int x, int y);
 long colour_at(int x, int y);
 long fill_at(int x, int y);
+long fill_only_at(int x, int y);
 void screen_reset(void);
 
 int add_node(int parent, const char *name, int is_dir, const char *data);

@@ -73,7 +73,11 @@ typedef struct {                         /* where a file is, as VFS_OFFSET repor
 #define UI_PEN        19                 /* (RGB565) */
 #define UI_BACKGD     20                 /* (RGB565) */
 #define UI_STRING     21                 /* (strdesc_t *, region_t *, mode); the driver copies at most 200 bytes */
-#define DRAW_DOTS     3                  /* mode bits 0-1: only the glyphs' dots, what is behind stays */
+#define DRAW_COLOUR   1                  /* mode bits 0-1: the background colour behind the letters (see below) */
+/* The driver draws a string into a strip as wide as the text (at its aligned place in the region) and 16 rows high,
+   then writes the whole strip to the panel. Fill mode 1 first fills the strip with the background colour; mode 3
+   ("only the dots") leaves in it what the previous string left, so stale letters and colours show around the text
+   (stage 25 as first flashed). Row 15 of the strip is empty for Latin letters. */
 #define ALIGN_LEFT    (0 << 2)           /* bits 2-3 */
 #define ALIGN_CENTRE  (1 << 2)
 #define ALIGN_RIGHT   (2 << 2)

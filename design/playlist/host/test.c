@@ -1088,6 +1088,52 @@ static void test_list_style(void)
 #define Y_KEY(row) (95 + 16 * (row))      /* a key row's text: one above its cell */
 #define TITLE_TEXT_X 22
 
+/* The search screen below the status bar as the design has it, whatever the state: the query line in the background
+   colour with its underline (the accent while the keys type, else the line colour); the result lines, at most one of
+   them chosen (a panel 126 x 15 at x = 1 with the accent mark); the keys 41 x 15, one pixel apart, at most one in the
+   accent. The mock counts a text's whole region as painted in its background colour (the driver paints the part the
+   text covers), so a text that reaches out of its place, on the wrong colour, shows here; and the fills alone must
+   draw the same, so no text is needed to complete a shape. Checked whenever the search waits for a key after
+   drawing; the first difference is reported. */
+static int layout_failed;
+static long layout_at(int x, int y, long under, int line, int key)
+{
+    int i = (y - 32) / 16, ry = (y - 32) % 16, row = (y - 96) / 16, ky = (y - 96) % 16, col = (x - 1) / 42;
+    if (y < 32)
+        return y == 31 && x >= 4 && x < 124 ? under : COL_BG;
+    if (y < 96)
+        return i != line || ry == 15 || x < 1 || x > 126 ? COL_BG
+             : x >= 3 && x < 5 && ry >= 3 && ry < 12 ? COL_ACCENT : COL_SURFACE;
+    return ky == 15 || x < 1 || (x - 1) % 42 == 41 || col > 2 ? COL_BG : row * 3 + col == key ? COL_ACCENT : COL_SURFACE;
+}
+
+static void check_layout(void)
+{
+    long under = fill_at(4, 31);
+    int line = -1, key = -1, i, x, y;
+    for (i = 0; i < 4; i++)
+        if (fill_at(2, 32 + 16 * i) == COL_SURFACE)
+            line = i;
+    for (i = 0; i < 12; i++)
+        if (fill_at(2 + i % 3 * 42, 97 + i / 3 * 16) == COL_ACCENT)
+            key = i;
+    if (layout_failed)
+        return;
+    if ((under == COL_ACCENT) != (key >= 0) || (key >= 0) == (line >= 0) || (under != COL_ACCENT && under != COL_LINE)) {
+        layout_failed = 1;
+        CHECK(0, "search screen: underline %#lx, chosen line %d, accent key %d", under, line, key);
+        return;
+    }
+    for (y = 16; y < 160; y++)
+        for (x = 0; x < 128; x++)
+            if (fill_at(x, y) != layout_at(x, y, under, line, key) || fill_only_at(x, y) != fill_at(x, y)) {
+                layout_failed = 1;
+                CHECK(0, "search screen: %d,%d is %#lx (by fills %#lx), not %#lx (line %d, key %d)", x, y, fill_at(x, y),
+                      fill_only_at(x, y), layout_at(x, y, under, line, key), line, key);
+                return;
+            }
+}
+
 /* UTF-8 source text as UTF-16 with FF FE (code points up to U+FFFF) */
 static int to_utf16(u8 *out, const char *s)
 {
@@ -1440,6 +1486,7 @@ static void test_search(void)
     const char *log = getenv("SEARCH_SCREENS");
     if (log)
         draw_log = fopen(log, "w");
+    screen_check = check_layout;
     test_matching();
     test_search_keys();
     test_search_songs();
@@ -1447,6 +1494,7 @@ static void test_search(void)
     if (draw_log)
         fclose(draw_log);
     draw_log = NULL;
+    screen_check = NULL;
     raw_keys = 0;
     browse_mode = BROWSE_SONGS;
     screen_reset();

@@ -273,6 +273,7 @@ struct screen_text texts[MAX_TEXTS];
 int text_count, fills, strings, tag_while_drawing = -1;
 FILE *draw_log;
 static u32 filled[160][128];                            /* the colour each pixel was last filled with */
+static u32 fills_only[160][128];                        /* ... by fills alone, as if texts painted nothing */
 
 /* a string as the driver gets it, as plain text: UTF-16 (FF FE) and UTF-8 (EF BB BF) beyond ASCII as '?', and the
    ellipsis U+2026 as "~" */
@@ -290,13 +291,13 @@ static void as_plain(char *out, int room, const strdesc_t *d)
     out[n] = 0;
 }
 
-/* A fill covers what was drawn there: a text whose left edge it covers, and the rows of the glyphs (rows 4 to 15 of
-   the 16-row cell: ascenders from row 4, descenders down to row 15). */
+/* A fill covers what was drawn there: a text whose left edge it covers, and the rows of the glyphs (rows 4 to 14 of
+   the 16-row cell for Latin letters: ascenders from row 4, descenders down to row 14; row 15 is empty). */
 static void forget_texts(int x, int y, int w, int h)
 {
     int i, k = 0;
     for (i = 0; i < text_count; i++)
-        if (!(texts[i].x >= x && texts[i].x < x + w && texts[i].y + 4 < y + h && texts[i].y + 16 > y))
+        if (!(texts[i].x >= x && texts[i].x < x + w && texts[i].y + 4 < y + h && texts[i].y + 15 > y))
             texts[k++] = texts[i];
     text_count = k;
 }
@@ -318,7 +319,7 @@ static void search_draw(uptr a, uptr b, uptr c, int cmd)
         forget_texts(r->x, r->y, r->w, r->h);
         for (int y = r->y; y < r->y + r->h; y++)
             for (int x = r->x; x < r->x + r->w; x++)
-                filled[y][x] = backgd;
+                filled[y][x] = fills_only[y][x] = backgd;
         if (draw_log)
             fprintf(draw_log, "fill %d %d %d %d %#x\n", r->x, r->y, r->w, r->h, backgd);
     } else if (cmd == UI_STRING) {
@@ -328,10 +329,13 @@ static void search_draw(uptr a, uptr b, uptr c, int cmd)
         int i;
         if (tag_while_drawing < 0)
             tag_while_drawing = *timer_tag();
-        if ((c & 3) != DRAW_DOTS || !(c & NO_ARABIC) || r->h != 16 || r->x + r->w > 131 || d->length > 200
-            || (d->lang == TEXT_UTF16) != (t[0] == 0xff && t[1] == 0xfe))
+        if ((c & 3) != DRAW_COLOUR || !(c & NO_ARABIC) || r->h != 16 || r->x + r->w > 128 || r->y + 16 > 160
+            || d->length > 200 || (d->lang == TEXT_UTF16) != (t[0] == 0xff && t[1] == 0xfe))
             fprintf(stderr, "a string drawn with mode %#x in %d,%d %dx%d\n", (unsigned)c, r->x, r->y, r->w, r->h), exit(2);
         strings++;
+        for (int y = r->y; y < r->y + 16; y++)             /* the driver's strip, in the background colour: here */
+            for (int x = r->x; x < r->x + r->w; x++)        /* the whole region, which holds it wherever it is */
+                filled[y][x] = backgd;
         for (i = 0; i < text_count && (texts[i].x != r->x || texts[i].y != r->y); i++)
             ;
         if (i == text_count && text_count < MAX_TEXTS)
@@ -341,11 +345,13 @@ static void search_draw(uptr a, uptr b, uptr c, int cmd)
             texts[i].y = r->y;
             texts[i].w = r->w;
             texts[i].colour = pen;
+            texts[i].back = backgd;
             texts[i].mode = (u32)c;
             as_plain(texts[i].s, sizeof texts[i].s, d);
         }
         if (draw_log) {
-            fprintf(draw_log, "text %d %d %d %d %#x %#x %d ", r->x, r->y, r->w, r->h, pen, (unsigned)c, d->lang);
+            fprintf(draw_log, "text %d %d %d %d %#x %#x %#x %d ", r->x, r->y, r->w, r->h, pen, backgd, (unsigned)c,
+                    d->lang);
             for (i = 0; i < d->length && (t[i] || (d->lang == TEXT_UTF16 && i + 1 < d->length && t[i + 1])); i += d->lang == TEXT_UTF16 ? 2 : 1)
                 fprintf(draw_log, d->lang == TEXT_UTF16 ? "%02x%02x" : "%02x", t[i], d->lang == TEXT_UTF16 ? t[i + 1] : 0);
             fprintf(draw_log, "\n");
@@ -363,8 +369,9 @@ const char *text_at(int x, int y)
     return "";
 }
 
-/* the colour the pixel at x, y was last filled with */
+/* the colour the pixel at x, y was last filled with: by a fill or the background of a text; or by fills alone */
 long fill_at(int x, int y) { return (long)filled[y][x]; }
+long fill_only_at(int x, int y) { return (long)fills_only[y][x]; }
 
 /* the colour the text at x, y was drawn in, or -1 */
 long colour_at(int x, int y)
@@ -443,12 +450,18 @@ void delay_tick(void) {}
    with no message (IDLE: the search goes on in them), and marks for the draw log (SNAP). */
 int raw_keys, idle_left, volume_popups, app_result;
 static int app_pending;
+void (*screen_check)(void);
+static int screen_checked = -1;                         /* fills + strings when the screen was last checked */
 
 int get_gui_msg(void *msg)
 {
     u8 *m = msg;
     int e;
 
+    if (raw_keys && screen_check && fills + strings != screen_checked) {   /* the search waits: its screen is whole */
+        screen_checked = fills + strings;
+        screen_check();
+    }
     if (idle_left > 0) {
         idle_left--;
         return 0;
@@ -836,6 +849,7 @@ u32 dir_select(u8 *pi, dirctl_t *dc)
 void screen_reset(void)
 {
     text_count = fills = strings = 0;
+    screen_checked = -1;
     tag_while_drawing = -1;
     clear_pending = 0;
     idle_left = 0;

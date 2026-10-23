@@ -65,9 +65,16 @@ A style is passed as `{id, type}` (4 bytes; type 1 = `COMMON.STY`). Strings are 
 halfword.
 
 String drawing modes (16 bits): bits 0-1 fill mode (0 read the background back from the panel and draw over it,
-1 opaque with the background colour, 2 from a column-wise background picture, 3 transparent dots), bits 2-3
+1 opaque with the background colour, 2 from a column-wise background picture, 3 nothing: see below), bits 2-3
 alignment (left, centre, right), bits 4-7 long-text handling (clip, drop incomplete characters, several rows,
 ellipsis, scroll), bits 10-11 font size (0 normal, 1 large, 2 small), bit 12 divide words.
+
+A string is drawn into a buffer strip as wide as the text (at the place its alignment gives it in the region) and as
+high as the font (16 rows), in pieces of at most 160 columns, and each piece is written to the panel whole. Before the
+letters go in, the strip is prepared by the fill mode (0x11825e, then 0x117e32): mode 1 fills it with the background
+colour (DC +4, the colour function 18 fills with), mode 0 reads the panel back into it, mode 2 copies the background
+picture, and mode 3 does nothing, so the strip holds what the previous string left there. Mode 3 is not
+"transparent": around the letters the panel gets stale pixels (stage 25 as first flashed).
 
 ## Keyed draws
 

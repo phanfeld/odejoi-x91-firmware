@@ -3,6 +3,17 @@
 #define PLAYLIST_SEARCH_H
 #include "fw.h"
 
+/* The theme's colours as RGB565; build_stage25.py passes the theme's own, these are Amber's. */
+#ifndef COL_BG
+#define COL_BG        0x0000
+#define COL_SURFACE   0x18e4
+#define COL_LINE      0x2987
+#define COL_TEXT      0xf7be
+#define COL_TEXT2     0x8cb4
+#define COL_ACCENT    0xfd80
+#define COL_ON_ACCENT 0x0862
+#endif
+
 /* "Search" in the options of a music list: the keypad screen over the list's current level; returns what the list
    option handler returns (RESULT_REDRAW, "Play", or a system message's result). */
 u32 search_list(u8 *path_info);
