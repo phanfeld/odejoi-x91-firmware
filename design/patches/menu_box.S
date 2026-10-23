@@ -6,7 +6,7 @@
 @ caller asked. Both through the bank's own veneer to the display driver, so the code needs no literal; it sits at
 @ the end of the bank it is called from (the menu routines keep their list data inside their bank).
 @
-@ build_stage24.py assembles this per bank: BANK, VENEER_OFF and TAIL_OFF are set with --defsym.
+@ design/graphite/lists.py assembles this per bank: BANK, VENEER_OFF and TAIL_OFF are set with --defsym.
 
         .syntax unified
         .cpu cortex-m3

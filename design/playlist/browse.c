@@ -16,7 +16,7 @@
  * is not relied on), and its record in M3U.LIB takes the new name and place.
  *
  * How it hooks in: the list option callback (MUSIC.AP 0x18161000) hands the result of the chosen option row, the
- * browser's path info and the list row the options were opened on to a result handler; build_stage21.py points
+ * browser's path info and the list row the options were opened on to a result handler; the build points
  * its two calls (0x1816102e, 0x18161092) to list_option and m3u_option, which pass everything they do not handle
  * to the stock handlers; "Search" (stage 25, 0x8606 in both) goes on to search.c, "Add songs" (stage 26, 0x8607 in
  * Playlists) to add_songs, "New playlist" and "Rename" (stage 27, 0x8605 and 0x860f in Playlists) to new_playlist and

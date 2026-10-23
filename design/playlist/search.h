@@ -3,7 +3,7 @@
 #define PLAYLIST_SEARCH_H
 #include "fw.h"
 
-/* The theme's colours as RGB565; build_stage25.py passes the theme's own, these are Amber's. */
+/* The theme's colours as RGB565; the build passes the theme's own, these are Amber's. */
 #ifndef COL_BG
 #define COL_BG        0x0000
 #define COL_SURFACE   0x18e4

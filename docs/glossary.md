@@ -47,8 +47,13 @@ shared code
 sideways copy
 : The second, column-wise copy of a picture that serves as a scrolling text's background.
 
+release image
+: An image `design/build.py` makes from the stock image; `RELEASE` in `build.py` holds the sha256 of each theme's
+  1.0.0 image, and `--check` compares.
+
 stage
-: One step of the design, one builder (`design/build_stageN.py`), one flash.
+: One step of the design before release 1.0: one builder (`design/build_stageN.py`, now in the git history), one
+  flash. Release 1.0 is stage 27, built in one go.
 
 status bar
 : The top 20 rows: card mark, Bluetooth mark, battery, and (main menu) the clock; since stage 24 also menu and list

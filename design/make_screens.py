@@ -3,9 +3,9 @@
 
 usage: make_screens.py [OUT_DIR]          (default design/screens/)
 
-Reads each theme's latest build (x91_dump/themes/themes.json, then x91_dump/themes/<theme>/stageN/unpacked/) and
+Reads each theme's build (x91_dump/themes/themes.json, then x91_dump/themes/<theme>/unpacked/) and
 composes the screens the way the firmware draws them: pictures and layout records come from the image, positions of
-what the firmware draws by code come from the stage builders (see the constants below and the firmware reference).
+what the firmware draws by code come from the build (see the constants below and the firmware reference).
 Song names, the cover and the book text are samples. Writes:
 
   berry.png    main menu, Music menu, a playlist, playing screen, screensaver (Berry)
@@ -30,14 +30,14 @@ COMMON = 0x8000                                  # bit 15 of a picture id: COMMO
 
 # Status bar (firmware/shared-code, stage 24): parts drawn with black transparent, at fixed places
 CARD, BLUETOOTH, BATTERY = (0, 0, 204), (98, 0, 202), (108, 0, 192)   # no card, connected, full
-CLOCK_X, CLOCK_Y, CLOCK_DIGITS, CLOCK_KEY = 22, 1, 135, 0x7bcf        # main menu clock (build_stage15)
-# Playing screen (build_stage11)
+CLOCK_X, CLOCK_Y, CLOCK_DIGITS, CLOCK_KEY = 22, 1, 135, 0x7bcf        # main menu clock (graphite/statusbar.py)
+# Playing screen (graphite/music.py)
 BAR_Y, BAR_X, BAR_LEN = 132, 8, 106
 COVER = (19, 19, 90)                             # 110 x 90 area at (9, 19), a square cover centred
 # Screensaver clock (shared clock routine, clock_sprite.S)
 SAVER_BG, SAVER_TIME, SAVER_COLON, SAVER_DATE, SAVER_DASH = 171, 158, 170, 147, 157
 SPRITE = (36, 72, 221)
-# eBook reader (build_stage16)
+# eBook reader (graphite/reader.py)
 ROWS, ROW_H, TEXT_X, TEXT_W, PAGE_H = 7, 16, 4, 152, 116
 EBAR_X, EBAR_LEN, EBAR_Y = 6, 104, 119
 NUMBER = dict(x=120, y=112, w=36, h=16)
@@ -358,8 +358,8 @@ def main():
     out = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(HERE, "screens")
     os.makedirs(out, exist_ok=True)
     themes = json.load(open(os.path.join(THEMES, "themes.json")))
-    fws = {t["id"]: xp.Firmware(os.path.join(THEMES, t["id"], "stage%d" % t["stage"], "unpacked")) for t in themes}
-    print("stage", ", ".join("%s %d" % (t["name"], t["stage"]) for t in themes))
+    fws = {t["id"]: xp.Firmware(os.path.join(THEMES, t["id"], "unpacked")) for t in themes}
+    print("Graphite", ", ".join("%s %s" % (t["name"], t.get("version", "?")) for t in themes))
 
     fw = fws["berry"]
     title, rows = menu(fw, "MUSIC", 0)

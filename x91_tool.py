@@ -85,8 +85,8 @@ def core_hash(data):
 
 
 def firmwares():
-    """The images that can be written: the themes built by design/build_theme.py, what the last write replaced
-    (the way back if a new stage misbehaves), and the original firmware."""
+    """The images that can be written: the themes built by design/build.py, what the last write replaced
+    (the way back if a new image misbehaves), and the original firmware."""
     items = []
     listing = THEMES / "themes.json"
     if listing.exists():
@@ -94,7 +94,8 @@ def firmwares():
             p = THEMES / t["file"]
             if p.exists():
                 items.append(dict(key=t["id"], name=t["name"] + " theme", accent=t.get("accent"), path=p,
-                                  note="design stage %s, built %s" % (t.get("stage", "?"), t.get("built", "?"))))
+                                  note="Graphite %s, built %s" % (t.get("version") or "stage %s" % t.get("stage", "?"),
+                                                                   t.get("built", "?"))))
     saved = sorted(BACKUPS.glob("before_*.bin"), key=lambda p: p.stat().st_mtime) if BACKUPS.exists() and not DEMO else []
     if saved:
         when = time.strftime("%Y-%m-%d %H:%M", time.localtime(saved[-1].stat().st_mtime))
@@ -447,7 +448,7 @@ def job_dump(ui):
 def job_flash(ui):
     items = firmwares()
     if not items:
-        ui.message("Flash a theme", [("No images found.", "bad"), "", "Build them with: python3 design/build_theme.py"])
+        ui.message("Flash a theme", [("No images found.", "bad"), "", "Build them with: python3 -I design/build.py"])
         return
     last = Known.name(WORK / "readback.bin", items) if (WORK / "readback.bin").exists() else None
     rows = [(it["name"], it["note"], it["accent"], "<- last written to the player" if it["name"] == last else "") for it in items]

@@ -1,5 +1,5 @@
 @ MUSIC.AP, code bank at 0x18061000: the whole routine that draws the playing time and the progress bar
-@ (bank offsets 0x390 to 0x476, 230 bytes). Replaces the stage 9 patch of its second half.
+@ (bank offsets 0x390 to 0x476, 230 bytes). The knob moves column by column, without flicker.
 @
 @ Called with r0 = 1 on a full repaint of the screen (else 0), r1 = control block, r2 = 0 for the time, 1 for the bar.
 @ Time: the stock logic, written compactly. The room gained goes to the bar.

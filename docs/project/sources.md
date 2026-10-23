@@ -9,7 +9,7 @@ Nothing from the stock firmware is in this repository, and no third-party code i
 | `actions_dump`, `adfus` loader, `nandread` payload | [ilyakurdyukov/actions_flash](https://github.com/ilyakurdyukov/actions_flash), commit `0a7d9cf` | git submodule `actions_flash/`; the X91 page-size scan is our patch `patches/actions_flash-x91_scan.patch` |
 | Flashing sequence, read-only driver patch | [TheWirelessPhoenix/a02-os](https://github.com/TheWirelessPhoenix/a02-os) | re-implemented in `x91_dump/x91_flash.py`; no code copied |
 | Vendor flash helpers `fwscf651.bin`, `nandhwsc.bin`, `flash_id.bin` | AGPTEK A02XT/A02PLT firmware package `A02T-20250709-V1.0` ([download page](https://www.agptek.com/blog/a02xt-a02plt-firmware-upgrade/)) | not in git; extracted locally, checked against `x91_dump/flash_helpers/SHA256SUMS.txt` and the hash pinned in `x91_flash.py` |
-| Ubuntu typeface | [Ubuntu Font Family](https://design.ubuntu.com/font) (Ubuntu Font Licence 1.0) | rendered from the installed system font by `build_stage2.py` |
+| Ubuntu typeface | [Ubuntu Font Family](https://design.ubuntu.com/font) (Ubuntu Font Licence 1.0) | rendered from the installed system font by `design/graphite/typeface.py` |
 
 ## Used for analysis only
 

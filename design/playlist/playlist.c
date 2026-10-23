@@ -14,7 +14,7 @@
  * the change without "Update list?". Messages in the player's language say what happened (MUSIC.STY texts 11,
  * 12, 14 and 27, COMMON.STY 26 and 36).
  *
- * design/build_stage20.py puts this into free room at the end of code banks of MUSIC.AP. Code there has no
+ * The build (design/graphite/newcode.py) puts this into free room at the end of code banks of MUSIC.AP. Code there has no
  * global or static data and no string constants (constant text is built in code) and calls no library. Its
  * buffers are on the stack (the program's task has about 3 KB): the RAM from 0x101000 on, where the menus keep
  * their scratch data, is also where code banks are loaded, so data put there does not survive a call into
