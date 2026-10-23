@@ -1328,8 +1328,9 @@ static void test_search_keys(void)
     CHECK(tag_while_drawing == 0x8e && *timer_tag() == 0x84, "timer tag %#x while drawing, %#x after", tag_while_drawing,
           *timer_tag());
     CHECK(pen == 0xffff, "the pen colour is not given back: %#x", pen);
-    /* rows read: all 11 for the first key, then only those that still matched (10, then 4), and 9 for the lines */
-    CHECK(items_rows <= 11 + 10 + 4 + 9, "%d rows read", items_rows);
+    /* rows read: all 11 for the first key, then only those that still matched (10, then 4); 9 for the lines, and the
+       lines of the matches each key found (at most 4 per key: they are drawn after the search's stretch) */
+    CHECK(items_rows <= 11 + 10 + 4 + 9 + 3 * 4, "%d rows read", items_rows);
 
     /* the keypad: the chosen key filled in another colour than the others; Previous goes round its row, Up stops at
        the top when nothing is found */
@@ -1481,6 +1482,216 @@ static void test_search_long(void)
           "long list: %#x row %u, count %s", r, last_stock_active, text_at(80, 16));
 }
 
+/* MUSIC.LIB as the library builder writes it (search.c), for the songs nodes[songs[0 .. n)]: All songs in the order of
+   their names, each name cut to 26 characters as the builder cuts it. */
+static int songs_library(const int *songs, int n)
+{
+    int node = find("MUSIC.LIB"), order = 1 + (n + 1) / 2, sorted[64], i, k, t;
+    u32 size = (u32)(order + 2 * ((2 * n + 511) / 512)) * 512;
+    u8 *d, *rec;
+
+    if (node < 0)
+        node = add_node(0, "MUSIC.LIB", 0, NULL);
+    nodes[node].gone = 0;
+    node_room(node, size);
+    d = (u8 *)nodes[node].data;
+    memset(d, 0, size);
+    nodes[node].size = size;
+    memcpy(d, "MUSIC", 5);
+    d[8] = (u8)n;
+    d[10] = 1;
+    memcpy(d + 0x10, "ALLSONG", 7);
+    d[0x24] = (u8)order;
+    d[0x26] = (u8)(order + (2 * n + 511) / 512);
+    for (i = 0; i < n; i++) {
+        rec = d + 512 + 256 * i;
+        rec[0] = 0xff;
+        rec[1] = 0xfe;
+        for (k = 0; k < 26 && nodes[songs[i]].name[k]; k++)
+            rec[2 + 2 * k] = (u8)nodes[songs[i]].name[k];
+        memcpy(rec + 0x94, "MP3", 4);
+        memcpy(rec + 0x9c, &nodes[songs[i]].parent, 4);
+        memcpy(rec + 0xa0, &songs[i], 4);
+        layer_of(nodes[songs[i]].parent, songs[i], rec + 0xa8);
+        sorted[i] = i;
+    }
+    for (i = 1; i < n; i++)                             /* by name */
+        for (k = i; k > 0; k--) {
+            if (strncasecmp(nodes[songs[sorted[k - 1]]].name, nodes[songs[sorted[k]]].name, 26) <= 0)
+                break;
+            t = sorted[k];
+            sorted[k] = sorted[k - 1];
+            sorted[k - 1] = t;
+        }
+    for (i = 0; i < n; i++) {
+        d[order * 512 + 2 * i] = (u8)sorted[i];
+        d[d[0x26] * 512 + 2 * sorted[i]] = (u8)i;
+    }
+    return node;
+}
+
+/* the search screen at SNAP(n): the query line, the count, the result lines, the chosen line (or -1) */
+struct snapshot { char query[64], count[64], line[4][64]; int chosen; };
+static struct snapshot snaps[32];
+static void remember(int n)
+{
+    struct snapshot *snap = &snaps[n & 31];
+    int i;
+    snprintf(snap->query, sizeof snap->query, "%s", text_at(6, 16));
+    snprintf(snap->count, sizeof snap->count, "%s", text_at(80, 16));
+    snap->chosen = -1;
+    for (i = 0; i < 4; i++) {
+        snprintf(snap->line[i], sizeof snap->line[i], "%s", text_at(8, Y_RESULT(i)));
+        if (fill_at(2, Y_RESULT(i)) == COL_SURFACE)
+            snap->chosen = i;
+    }
+}
+
+/* the list control on row 1 of a list of `total` rows, `page` lines on a page */
+static void list_at(int total, int page)
+{
+    memset(&dirctl, 0, sizeof dirctl);
+    menu_count = 0;
+    dirctl.page = (u8)page;
+    dirctl.total = (u16)total;
+    dirctl.top = dirctl.list_no = dirctl.active = dirctl.old = 1;
+    dirctl.bottom = (u16)(page < total ? page : total);
+}
+
+/* "Add songs" (stage 26): the library's songs by the keypad, each one chosen to the end of the playlist */
+static void test_add_songs(void)
+{
+    u8 pi[128];
+    char want[2048], name[40];
+    dir_brow_t b;
+    int all[40], n = 0, i, lib_node, wonder[8];
+    u32 r;
+
+    disk();
+    all[n++] = find("01 - 4-30.mp3");
+    all[n++] = find("x.mp3");
+    all[n++] = find("02 - Love Left (original mix).mp3");
+    all[n++] = song;
+    lib_node = songs_library(all, n);
+    browse_mode = BROWSE_M3U;
+    m3u_cur = 0xffff;
+    browser_enter_dir(BROW_SON, m3u_row("Focus"), &b);
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_M3U;
+    screen_reset();
+    raw_keys = 1;
+    on_snapshot = remember;
+
+    /* inside Focus: 7-8-2 spells "Sta" of Stardust; Menu and Play add it, the search comes back at once with the same
+       keys and the same line, and Play there (before the search has found anything again) finds it in the playlist
+       already; a held Return clears the keys, Return leaves */
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY,
+           RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, IDLE(5), SNAP(10), PRESS(KEY_MENU), PLAY_KEY,
+           SNAP(14), PLAY_KEY, IDLE(5), SNAP(11), HELD_BACK, BACK_KEY);
+    dialogs = 0;
+    list_at(1, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    snprintf(want, sizeof want, "%s%s", DANGER, LINE);
+    content_is(focus, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && !strcmp(last_message, "text 12: \"01 - Stardust (original \", Focus")
+          && last_dialog_text == S_ALREADY_ADDED && dialogs == 2, "add: %#x, %s, then text %d (%d messages)", r,
+          last_message, last_dialog_text, dialogs);
+    CHECK(!strcmp(snaps[11].query, "Sta") && !strcmp(snaps[11].count, "1/1")
+          && !strcmp(snaps[11].line[0], "01 - Stardust (original ") && snaps[11].chosen == 0,
+          "back after the add: \"%s\" %s, \"%s\" chosen %d", snaps[11].query, snaps[11].count, snaps[11].line[0],
+          snaps[11].chosen);
+    CHECK(!strcmp(snaps[14].query, "Sta") && !strcmp(snaps[14].count, "~")
+          && !strcmp(snaps[14].line[0], "01 - Stardust (original ") && snaps[14].chosen == 0,
+          "the first screen after the add (before the search): \"%s\" %s, \"%s\" chosen %d", snaps[14].query,
+          snaps[14].count, snaps[14].line[0], snaps[14].chosen);
+    CHECK(!strcmp(text_at(TITLE_TEXT_X, 0), "Add songs") && *timer_tag() == 0x84, "add: title \"%s\", tag %#x",
+          text_at(TITLE_TEXT_X, 0), *timer_tag());
+    CHECK(writes_while_playing == 0 && status == PLAY_PLAYING, "add: %d writes while playing", writes_while_playing);
+    CHECK(dirctl.total == 2 && dirctl.bottom == 2 && dirctl.top == 1 && dirctl.list_no == 1 && dirctl.active == 1,
+          "the list after the add (it shows the new song at once): total %d, rows %d to %d, on %d", dirctl.total,
+          dirctl.top, dirctl.bottom, dirctl.list_no);
+
+    /* on a playlist in the list of playlists: 5-6-8-3 ("Love") to NothingMuch */
+    browser_enter_dir(BROW_PARENT, 0, &b);
+    screen_reset();
+    KEYSEQ(PLAY_KEY, RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_PREV, KT_DOWN),
+           PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_UP, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN),
+           PLAY_KEY, IDLE(5), PRESS(KEY_MENU), PLAY_KEY, IDLE(5), BACK_KEY, HELD_BACK, BACK_KEY);
+    list_at(2, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, (u32)m3u_row("NothingMuch"));
+    snprintf(want, sizeof want, "%s%s", X, LOVE);
+    content_is(nothing, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && !strcmp(last_message, "text 12: \"02 - Love Left (original\", NothingMuch")
+          && dirctl.total == 2 && dirctl.bottom == 2, "top: %#x, %s, the list's total %d", r, last_message, dirctl.total);
+
+    /* many songs: the 6th of eight "Wonder" songs (9-6-6) is added, and the search comes back on it, the lines as they
+       were (Play there again: already in it); its first screen comes before the search: the letters and the chosen
+       song, the other lines as they are found */
+    for (i = 0; i < 22; i++) {
+        snprintf(name, sizeof name, "Track %02d.mp3", i);
+        all[n++] = add_node(find("B"), name, 0, NULL);
+    }
+    for (i = 0; i < 8; i++) {                       /* four of them early in All songs, four late */
+        snprintf(name, sizeof name, i < 4 ? "A Wonder %d.mp3" : "Wonder %d.mp3", i);
+        all[n++] = wonder[i] = add_node(find("B"), name, 0, NULL);
+    }
+    songs_library(all, n);
+    browser_enter_dir(BROW_SON, m3u_row("Focus"), &b);
+    screen_reset();
+    KEYSEQ(RAW_KEY(KEY_DOWN, KT_DOWN), RAW_KEY(KEY_NEXT, KT_DOWN), PLAY_KEY, RAW_KEY(KEY_UP, KT_DOWN), PLAY_KEY, PLAY_KEY,
+           IDLE(10), PRESS(KEY_MENU), RAW_KEY(KEY_NEXT, KT_DOWN), RAW_KEY(KEY_DOWN, KT_DOWN), PLAY_KEY, SNAP(13),
+           IDLE(1), SNAP(16), IDLE(9), SNAP(12), PLAY_KEY, IDLE(10), BACK_KEY, PLAY_KEY, IDLE(10), SNAP(15), HELD_BACK, BACK_KEY);
+    list_at(2, 2);                                     /* a page of two lines: the new song lies behind it */
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    snprintf(want, sizeof want, "%s%sMusic\\A\\B\\Wonder 5.mp3\r\n", DANGER, LINE);
+    content_is(focus, want, __LINE__);
+    check_library(__LINE__);
+    CHECK(r == RESULT_REDRAW && last_dialog_text == S_ALREADY_ADDED && !strcmp(snaps[12].count, "6/8")
+          && !strcmp(snaps[12].line[0], "A Wonder 2.mp3") && !strcmp(snaps[12].line[3], "Wonder 5.mp3")
+          && snaps[12].chosen == 3, "many: %#x, text %d, count %s, lines %s .. %s, chosen %d", r, last_dialog_text,
+          snaps[12].count, snaps[12].line[0], snaps[12].line[3], snaps[12].chosen);
+    CHECK(!strcmp(snaps[13].query, "Won") && !strcmp(snaps[13].count, "~") && snaps[13].chosen == 3
+          && !*snaps[13].line[0] && !strcmp(snaps[13].line[3], "Wonder 5.mp3"),
+          "many, the first screen after the add: \"%s\" %s, %s .. %s, chosen %d", snaps[13].query, snaps[13].count,
+          snaps[13].line[0], snaps[13].line[3], snaps[13].chosen);
+    CHECK(dirctl.total == 3 && dirctl.bottom == 2 && dirctl.top == 1, "many: the list's total %d, rows %d to %d",
+          dirctl.total, dirctl.top, dirctl.bottom);
+    CHECK(!strcmp(snaps[16].count, "4~") && !strcmp(snaps[16].line[0], "A Wonder 2.mp3")       /* four found again, */
+          && !strcmp(snaps[16].line[3], "Wonder 5.mp3") && snaps[16].chosen == 3,                 /* the chosen one not */
+          "many, four found again: %s, %s .. %s, chosen %d", snaps[16].count, snaps[16].line[0], snaps[16].line[3],
+          snaps[16].chosen);
+    CHECK(!strcmp(snaps[15].query, "9666") && !strcmp(snaps[15].line[0], "No matches"),       /* another key: the kept */
+          "another key after the add: \"%s\", \"%s\"", snaps[15].query, snaps[15].line[0]);   /* song is gone */
+    (void)wonder;
+
+    /* a system message ends it with its result; the list and the library disagree, or no MUSIC.LIB: only a message */
+    screen_reset();
+    KEYSEQ(IDLE(1), APP(0x8104));
+    list_at(3, 6);
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == 0x8104 && *timer_tag() == 0x84, "system message: %#x", r);
+    rows_extra = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "disagree: %#x %d", r, last_dialog_text);
+    rows_extra = 0;
+    nodes[lib_node].gone = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "no MUSIC.LIB: %#x %d", r,
+          last_dialog_text);
+    nodes[lib_node].gone = 0;
+    nodes[lib_node].data[0x10] = 'X';                   /* not the head the builder writes */
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_ADD_SONGS, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "another head: %#x %d", r,
+          last_dialog_text);
+    raw_keys = 0;
+    on_snapshot = NULL;
+}
+
 static void test_search(void)
 {
     const char *log = getenv("SEARCH_SCREENS");
@@ -1491,6 +1702,7 @@ static void test_search(void)
     test_search_keys();
     test_search_songs();
     test_search_long();
+    test_add_songs();
     if (draw_log)
         fclose(draw_log);
     draw_log = NULL;

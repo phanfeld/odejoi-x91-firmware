@@ -31,6 +31,7 @@ code. The {doc}`../project/history` page lists what went onto the player and whe
 | 23 | the picker's page of five; Previous with the screen off | `MUSIC.AP` | yes |
 | 24 | the lists' top line: menu names, list names, counter only in an album or playlist; short menu texts; status bar right after a list, its marks without a blink | `COMMON.STY`, five programs, ten style files, `MUSIC.MCG`, `SETTING.MCG`, 15 programs | yes |
 | 25 | Search with a T9 keypad in the options of the music lists | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
+| 26 | "Add songs" in the Playlists options: songs of the library by the keypad, to that playlist | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
 
 ## Stage notes
 
@@ -87,4 +88,17 @@ out anew in the room of the built-in playlists' options.
 :alt: The search screen in Berry: empty; 2-3-2 typed, spelling "Bea" with three artists; a result chosen; back on the keypad below the results; songs
 The search screen as the host test draws it (Berry, `design/playlist/host/render.py`; the status bar's marks are
 the firmware's and not drawn here).
+```
+
+**26: Add songs.** In a playlist, or on one in the list of playlists, Menu → "Add songs" opens the same keypad over
+all songs of the library, as All songs lists them (read from `MUSIC.LIB`). Play on a result adds that song to the end
+of the playlist with the stock message, and the keypad comes back with the same keys and the same line chosen, for
+the next song: it shows at once the letters and the chosen song, which Play adds right away, and the other lines as
+the songs are found again; Return leaves, and the playlist shows the new songs. The code no longer fits the 0x1000 group's bank
+tails: the parts only "Add songs" runs went into tails of the 0x1a00 group.
+
+```{figure} ../../design/stage26-preview.png
+:alt: Add songs in Berry: "Sta" typed; at once after the sixth of eight was added; four of them found again; all found again
+"Add songs" as the host test draws it (Berry): 7-8-2 typed; at once after the sixth of eight "Wonder" songs was
+added, the chosen song on its line; four found again; all eight.
 ```

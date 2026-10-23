@@ -45,7 +45,9 @@ none), text, sub-title text, icon (a `COMMON.STY` picture), routine, 0, the shar
 to 30 end in "Search" (text 44, icon 107, the routine 0x181613e7 of the built-in "Playlist 2" row, which returns
 0x8606): the lists sat back to back, so 21 to 30 were laid out anew in the room of 21 to 40, and 31 to 40 (unreachable
 since stage 19) point at the rows of 26 to 30. `MUSIC.STY` text 44, "Reached maximum number of 'Playlists' …" (only
-for a full built-in playlist), reads "Search" in English.
+for a full built-in playlist), reads "Search" in English. Since stage 26 lists 26 to 30 have "Add songs" in front of
+"Search" (text 30, before "Clear [%s]?", asked only before clearing a built-in playlist; icon 15; the routine of the
+built-in "Playlist 3" row, 0x181613ef, which returns 0x8607).
 
 ## The playing screen
 
@@ -144,6 +146,20 @@ step 1 (0, 31, 36, 42 … 186, 191). The only other copies of the table are in `
 - Only MP3 files play from a playlist.
 
 The firmware itself never writes `.m3u` files; since stage 18 new code does ({doc}`../code/new-code`).
+
+## MUSIC.LIB
+
+The library builder's song library (songs by their tags), 1,536,000 bytes on the player of 2026-10-21 with 907 songs,
+has the layout of `M3U.LIB` below. Stage 26 reads it for "Add songs" (`search.c`); the browser reads it for the song
+lists.
+
+| Where | Content |
+|---|---|
+| sector 0 | head: "MUSIC", number of songs (+8), first record's sector (+10, 1), then items of 28 bytes: "ALLSONG" with the sectors of All songs' order and its inverse (+0x24, +0x26), "ALBUM", "ARTIST", "GENRE" with their lists |
+| sector 1 on | song records of 256 bytes, numbered from 0: the name the lists show (UTF-16 with FF FE, ending within 56 bytes: the title, here the file name), artist (+0x38), album (+0x54), genre (+0x70), track (+0x8c), extension (+0x94), cluster and offset of the directory entry (+0x9c, +0xa0), folder chain (+0xa8, 73 bytes), sort keys (+0xf4) |
+| order's sector | All songs: u16 record numbers in the order the list shows them (by name), then its inverse |
+
+The browser hands a name out cut to its buffer: with the 52 bytes the lists use, FF FE and 24 characters.
 
 ## M3U.LIB
 

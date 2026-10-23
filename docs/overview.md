@@ -23,7 +23,7 @@ That rules out Rockbox and any system that needs its whole core in RAM.
    verified file by file.
 2. **Write path.** The vendor's flashing sequence, replayed on Linux, was rehearsed read-only, then used to write the
    unchanged image, then a modified one. Every write is read back and compared. See {doc}`firmware/flashing`.
-3. **Graphite.** A new interface built on top of the stock firmware in 25 stages: pictures, typeface, layouts,
+3. **Graphite.** A new interface built on top of the stock firmware in 26 stages: pictures, typeface, layouts,
    menus, settings, program patches and new program code in C (playlist editing, a search with a T9 keypad). See
    {doc}`design/index`.
 4. **Tooling.** `x91_tool.py` dumps the firmware and flashes a theme; `design/build_theme.py` rebuilds every stage

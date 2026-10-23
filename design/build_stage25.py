@@ -36,7 +36,7 @@ import build_stage24 as s24  # noqa: E402   (sets up build_stage20 to 23; only t
 from build_stage18 import CFLAGS, BANK_TABLES, put_code  # noqa: E402
 
 s20, s21, s23 = s24.s20, s24.s21, s24.s23
-LIVE = os.path.join(HERE, "playlist")
+LIVE = os.path.join(HERE, "playlist", "stage25")  # the sources as this stage shipped them (stage 26 changed the live ones)
 
 SOURCES = ("playlist.c", "library.c", "keys.c", "browse.c", "search.c")
 HOT = ("scan", "match", "next_cp", "key_of", "start_of", "next_row", "read_rows")     # every row and character
@@ -58,6 +58,12 @@ ADD_ROW = (0x7fff, 5, 7, 0, s21.ADD_RESULT_FN | 0, 0, ROW_TAIL)
 STOCK_TEXT = "Reached maximum number of 'Playlists', overwrite an existing playlist?"
 LIST_BANK_GROUP = 0x1200                         # list_box (stage 24) sits at the end of the list control's bank
 MENU_BOX_LEN = 52
+CODE_SHA = {                                     # the placed code per theme (its colours are in the code)
+    "amber": "515de04d9f603af2126adcae755b707dd3d10476727a9d1509fa794ff3bb98d6",
+    "mint": "7eec769fc4debf33fa9e3a759a5b621450d258bb36448f6ea6003adb42d274af",
+    "ice": "eb8d05c3212db24deeff218f6725e0643014fb42cc9eee8e54bb4f8c1955c95d",
+    "berry": "17f9a3a50b69a3e477b98db9b7a7909b117cddb9e12e8edd4545742ed9e22e08",
+}
 
 
 def theme_flags():
@@ -251,6 +257,11 @@ def main():
         print("  bank %#x: length %#x -> %#x (%s)" % (b["addr"], b["len"], b["new_len"],
                                                     ", ".join(s[6:].split(".")[0] for s in b["secs"])))
     print("the search's per-row functions in bank %#x" % hot)
+    code_sha = hashlib.sha256(b"".join(struct.pack("<I", b["addr"]) + b["code"]
+                                       for b in sorted(banks, key=lambda b: b["addr"]))).hexdigest()
+    print("code sha256 (%s): %s" % (s1.THEME, code_sha))
+    if CODE_SHA.get(s1.THEME) != code_sha:
+        sys.exit("the frozen stage 25 sources no longer give the stage 25 code for %s" % s1.THEME)
     bad = lfi.check()
     img = os.path.join(out, "x91_lfi_stage25.bin")
     with open(img, "wb") as f:

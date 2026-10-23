@@ -25,18 +25,22 @@
  *
  * While the screen shows, the app timers of the list (the scrolling of its chosen row) are held by a timer tag of
  * the search's own, and the display's colours are given back afterwards.
+ *
+ * "Add songs" (stage 26, browse.c) searches the library's songs instead, as All songs lists them, read from the
+ * library builder's MUSIC.LIB: a chosen song goes back to the caller, which adds it to a playlist and opens the
+ * search again with the same keys and the same line chosen.
  */
 #include "fw.h"
 #include "util.h"
 #include "search.h"
 
-#define QMAX      16                     /* keys a query holds */
+#define QMAX      SEARCH_KEYS            /* keys a query holds */
 #define MAXROWS   4000                   /* rows searched: the library holds 4000 songs at most */
 #define WORDS     ((MAXROWS + 31) / 32)
 #define BATCH     3                      /* rows read from the browser at a time (it opens the library each time) */
 #define SCAN_ROWS 12                     /* rows tested before the search looks for keys again */
 #define NAMELEN   ROW_NAME               /* a row's name: the browser writes at most ROW_NAME - 2 bytes and two zeros */
-#define PRED      16                     /* characters of the spelled letters shown */
+#define PRED      12                     /* characters of the spelled letters (or digits) shown: the 72 pixels hold ten */
 #define SHOWN     4                      /* result lines */
 
 #define KEYS      12                     /* keys 0 to 8 are 1 to 9; then Del, 0, OK */
@@ -60,21 +64,26 @@
 
 enum { ENC_BYTE, ENC_WIDE, ENC_UTF8 };
 enum { ON_KEYS, ON_LIST };
-enum { STAY = 0, LEAVE = -1, PASS = -2 };   /* what a key does; a chosen row is above 0 */
+enum { STAY = 0, LEAVE = -1, PASS = -2, NONE = -3, AGAIN = -4 };   /* what a message does (NONE: none came; AGAIN: draw
+                                                                       the whole screen again); a chosen row is above 0 */
 
 typedef struct {
     u32 bits[WORDS];                     /* rows that may match: below pos they do, from pos on they did so far */
     u16 pred[PRED + 2];                  /* FF FE, the letters the first match spells, 0 */
-    union {                              /* a key message, or another message for the program */
-        u8 gui[8];
-        u8 app[24];
-    } msg __attribute__((aligned(4)));
     u8 q[QMAX];                          /* the keys typed: digits */
     int qlen, rows, pos, found;          /* found: the matches below pos */
     int focus, key, sel, top;            /* the keypad's key; the chosen result and the first one shown (match numbers) */
     int counted;                         /* what the count shows: found * 2 + still searching */
     u32 result;                          /* the result of a system message that ends the search */
+    u32 order, recs;                     /* MUSIC.LIB: where All songs' order and the records are; 0: the list's rows */
+    u16 want, want_row;                  /* back after an add: match want is row want_row - 1 (want_row 0: none), shown
+                                            and chosen at once, before the search finds it again */
 } search_t;
+
+typedef union {                          /* a key message, or another message for the program */
+    u8 gui[8];
+    u8 app[24];
+} msg_t;
 
 /* ------------------------------------------------------------------ names, letters and keys */
 
@@ -246,6 +255,32 @@ static int match_row(const search_t *st, int m)
     return -1;
 }
 
+/* MUSIC.LIB, the library builder's songs by their tags, has the layout of M3U.LIB (library.c): the head in sector 0
+   ("MUSIC", the number of songs at +8, the sector of the first record at +10, then items of 28 bytes, the first
+   "ALLSONG" with the sector of All songs' order, record numbers from 0, at +0x24); records of 256 bytes: the name
+   All songs shows (UTF-16 with FF FE, ending inside 56 bytes) at +0, the extension at +0x94, the directory entry's
+   cluster and offset at +0x9c and +0xa0, the folder chain at +0xa8. */
+#define M_SONGS   8
+#define M_FIRST   10
+#define M_ITEM    0x10
+#define M_ORDER   0x24
+#define M_REC     256
+#define M_EXT     0x94
+#define M_CLUSTER 0x9c
+#define M_LAYER   0xa8
+
+#define M_HEAD    0x28                   /* the bytes of the head read: up to the order's sector */
+
+static void songs_rows(const search_t *st, u8 names[][NAMELEN], int row, int n);
+
+/* The row of match m, or of the kept song before the search finds it again; -1 for none (yet). */
+static int row_of(const search_t *st, int m)
+{
+    if (m < st->found)
+        return match_row(st, m);
+    return st->want_row && m == st->want ? st->want_row - 1 : -1;
+}
+
 /* Rows row .. row+n-1 (from 0) into names[], as the list reads them. */
 static void read_rows(u8 names[][NAMELEN], int row, int n)
 {
@@ -263,6 +298,16 @@ static void read_rows(u8 names[][NAMELEN], int row, int n)
     d.num = (u8)n;
     d.top = (u16)(row + 1);
     browser_get_items(&d, f);
+}
+
+/* The same from MUSIC.LIB in All songs' order, for "Add songs" (songs_rows is in the 0x1a00 group's banks, whose
+   window lies above the search's: a call loads no bank twice). */
+static inline __attribute__((always_inline)) void get_rows(const search_t *st, u8 names[][NAMELEN], int row, int n)
+{
+    if (st->order)
+        songs_rows(st, names, row, n);
+    else
+        read_rows(names, row, n);
 }
 
 /* ------------------------------------------------------------------ drawing */
@@ -368,7 +413,7 @@ static void draw_count(search_t *st)
     fill(COUNT_X, Y_QUERY, 124 - COUNT_X, LINE, COL_BG);
     if (st->qlen) {
         w[0] = 0xfeff;
-        if (st->focus == ON_LIST && st->found) {
+        if (st->focus == ON_LIST && st->sel < st->found) {   /* (back after an add: not found again yet) */
             n = put_number(w, n, (u32)st->sel + 1);
             w[n++] = '/';
         }
@@ -389,11 +434,11 @@ static void draw_query(search_t *st)
     int i;
 
     fill(0, Y_QUERY, COUNT_X, LINE, COL_BG);
-    if (st->found) {
+    if (st->found || st->want_row) {                    /* (the kept song's letters until the first match comes) */
         text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, ON(COL_TEXT, COL_BG), ALIGN_LEFT | LONG_CUT);
     } else if (st->qlen) {                              /* nothing spelled yet: the digits, in its place */
         st->pred[0] = 0xfeff;
-        for (i = 0; i < st->qlen; i++)
+        for (i = 0; i < st->qlen && i < PRED; i++)
             st->pred[1 + i] = (u16)('0' + st->q[i]);
         st->pred[1 + i] = 0;
         text(st->pred, sizeof st->pred, 6, Y_QUERY, COUNT_X - 8, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);
@@ -420,39 +465,48 @@ static void draw_line(const search_t *st, int i, const u8 *name)
 static void draw_match(const search_t *st, int m)
 {
     u8 name[1][NAMELEN] __attribute__((aligned(4)));
-    int row = m < st->found ? match_row(st, m) : -1;
+    int row = row_of(st, m);
 
     if (m < st->top || m >= st->top + SHOWN)
         return;
     if (row >= 0)
-        read_rows(name, row, 1);
+        get_rows(st, name, row, 1);
     draw_line(st, m - st->top, row >= 0 ? name[0] : 0);
+}
+
+/* "No matches" on the first result line (its text buffer off the stack of the result lines) */
+static void no_matches(void)
+{
+    u16 w[12];
+
+    w[0] = 0xfeff;
+    put4(w, put4(w, put4(w, 1, 'N' | 'o' << 8 | ' ' << 16 | 'm' << 24), 'a' | 't' << 8 | 'c' << 16 | 'h' << 24),
+         'e' | 's' << 8);
+    text(w, sizeof w, 8, Y_LIST, 116, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);
 }
 
 static void draw_results(search_t *st)
 {
-    u16 w[12];
     int i;
 
     for (i = 0; i < SHOWN; i++)
         draw_match(st, st->top + i);
-    if (st->qlen && !st->found && !searching(st)) {    /* "No matches" */
-        w[0] = 0xfeff;
-        put4(w, put4(w, put4(w, 1, 'N' | 'o' << 8 | ' ' << 16 | 'm' << 24), 'a' | 't' << 8 | 'c' << 16 | 'h' << 24),
-             'e' | 's' << 8);
-        text(w, sizeof w, 8, Y_LIST, 116, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);
-    }
+    if (st->qlen && !st->found && !searching(st))
+        no_matches();
 }
 
 static void draw_all(search_t *st)
 {
-    u16 w[8];
+    u16 w[12];                                          /* FF FE, "Add songs", 0 */
     int k;
 
     headbar_all();                                      /* the status bar on, its middle empty (stage 24) */
     clear_bar();
     w[0] = 0xfeff;
-    put4(w, put4(w, 1, 'S' | 'e' << 8 | 'a' << 16 | 'r' << 24), 'c' | 'h' << 8);
+    if (st->order)
+        put4(w, put4(w, put4(w, 1, 'A' | 'd' << 8 | 'd' << 16 | ' ' << 24), 's' | 'o' << 8 | 'n' << 16 | 'g' << 24), 's');
+    else
+        put4(w, put4(w, 1, 'S' | 'e' << 8 | 'a' << 16 | 'r' << 24), 'c' | 'h' << 8);
     text(w, sizeof w, TITLE_X, 0, TITLE_W, ON(COL_TEXT2, COL_BG), ALIGN_LEFT | LONG_CUT);   /* the bar's middle: black */
     fill(0, LINE, 128, 160 - LINE, COL_BG);
     draw_query(st);
@@ -464,22 +518,24 @@ static void draw_all(search_t *st)
 
 /* ------------------------------------------------------------------ searching */
 
-/* A match: counted; the first one spells the query line, those on the result lines are drawn at once. */
+/* A match: counted; the first one spells the query line (drawn by scanned). */
 static void found_one(search_t *st, const u8 *name, int span)
 {
-    int m = st->found++;
-
-    if (!m) {
+    if (!st->found++)
         spelled(st->pred, name, span);
-        draw_query(st);
-    }
-    if (m >= st->top && m < st->top + SHOWN)
-        draw_line(st, m - st->top, name);
 }
 
-/* After a stretch of the search: done when nothing further is marked; the count when it changed. */
+/* After a stretch of the search, with its row names off the stack: the matches found since the count was drawn
+   (counted / 2 of them were) on the result lines, the first one's letters on the query line; done when nothing
+   further is marked; the count when it changed. */
 static void scanned(search_t *st)
 {
+    int m = st->counted >> 1;
+
+    if (!m && st->found)
+        draw_query(st);
+    for (; m < st->found && m < st->top + SHOWN; m++)
+        draw_match(st, m);                              /* (only those on the lines shown) */
     if (next_row(st, st->pos) < 0) {
         st->pos = st->rows;
         if (!st->found)
@@ -490,7 +546,8 @@ static void scanned(search_t *st)
 }
 
 /* The marked rows from pos on are tested against the whole query, up to SCAN_ROWS of them, a few per browser call
-   (the names are read into this frame). This and what it calls for every row and character share a bank. */
+   (the names are read into this frame; nothing is drawn from here). This and what it calls for every row and
+   character share a bank. */
 static void scan(search_t *st)
 {
     u8 names[BATCH][NAMELEN] __attribute__((aligned(4)));
@@ -499,7 +556,7 @@ static void scan(search_t *st)
     while (left > 0 && (r = next_row(st, st->pos)) >= 0) {
         for (n = 1; n < BATCH && r + n < st->rows && marked(st, r + n); n++)
             ;
-        read_rows(names, r, n);
+        get_rows(st, names, r, n);
         for (k = 0; k < n; k++) {
             span = match(names[k], st->q, st->qlen);
             if (span < 0)
@@ -521,6 +578,7 @@ static void restart(search_t *st)
     }
     st->pos = 0;
     st->found = 0;
+    st->want_row = 0;
     st->sel = st->top = 0;
     if (!st->qlen)
         st->pos = st->rows;
@@ -611,36 +669,36 @@ static void move(search_t *st, u32 key)
     }
 }
 
-/* A key the search does not use: as a menu has it (the volume, the key lock); 1 if the search ends. */
-static int other(search_t *st)
+/* A key the search does not use: as a menu has it (the volume, the key lock): STAY, AGAIN, or PASS if the search
+   ends. */
+static int other(search_t *st, msg_t *msg)
 {
     u16 ev = 0;
     u32 r;
 
-    if (!key_mapping(st->msg.gui, &ev))
-        return 0;
+    if (!key_mapping(msg->gui, &ev))
+        return STAY;
     r = message_box(ev);
     if (r == RESULT_REDRAW)
-        draw_all(st);
-    else if (r)
-        st->result = r;
-    return r && r != RESULT_REDRAW;
+        return AGAIN;
+    st->result = r;
+    return r ? PASS : STAY;
 }
 
 /* One key message: STAY, LEAVE, PASS, or the chosen row (from 1). */
-static int on_key(search_t *st)
+static int on_key(search_t *st, msg_t *msg)
 {
-    u32 key = st->msg.gui[2], kind = st->msg.gui[4] | (u32)st->msg.gui[5] << 8, d;
+    u32 key = msg->gui[2], kind = msg->gui[4] | (u32)msg->gui[5] << 8, d;
     int press = (kind & (KT_DOWN | KT_LONG | KT_HOLD)) != 0, up = (kind & KT_SHORT_UP) != 0;
 
-    if (st->msg.gui[0] != 0)
-        return other(st) ? PASS : STAY;
+    if (msg->gui[0] != 0)
+        return other(st, msg);
     if (key == KEY_UP || key == KEY_DOWN || key == KEY_PREV || key == KEY_NEXT) {
         if (press)
             move(st, key);
     } else if (key == KEY_PLAY) {
         if (up && st->focus == ON_LIST)
-            return match_row(st, st->sel) + 1;
+            return row_of(st, st->sel) + 1;
         d = (u32)digit_of(st->key);
         if (up && st->key == K_DEL)
             erase(st, 0);
@@ -658,33 +716,43 @@ static int on_key(search_t *st)
     } else if (key == KEY_MENU) {
         if (up && (st->focus == ON_LIST || st->found))
             focus(st, st->focus == ON_LIST ? ON_KEYS : ON_LIST);
-    } else if (other(st)) {
-        return PASS;
+    } else {
+        return other(st, msg);
     }
     return STAY;
 }
 
+/* A key or another message for the program, if one waits: what it does; NONE when none came. The message is held
+   here, not in the screen's state: this frame is off the stack while the search goes on. */
+static int poll(search_t *st)
+{
+    msg_t msg __attribute__((aligned(4)));
+    u32 r;
+
+    if (get_gui_msg(msg.gui))
+        return on_key(st, &msg);
+    if (!get_app_msg(msg.app))
+        return NONE;
+    r = app_dispatch(msg.app);
+    if (r == RESULT_REDRAW)
+        return AGAIN;
+    st->result = r;
+    return r ? PASS : STAY;
+}
+
 /* The screen until a row is chosen (its number from 1), Return leaves it (LEAVE) or a system message asks to leave
-   (PASS, its result in st->result); the search goes on whenever no message waits. */
+   (PASS, its result in st->result); the search goes on whenever no message waits. The whole screen is drawn here,
+   not deeper down, to keep the stack small. */
 static int run(search_t *st)
 {
     int act;
-    u32 r;
 
-    draw_all(st);
-    for (;;) {
-        if (get_gui_msg(st->msg.gui)) {
-            act = on_key(st);
+    for (act = AGAIN;; act = poll(st)) {
+        if (act == AGAIN) {                             /* the first time, and after a pop-up */
+            draw_all(st);
+        } else if (act != NONE) {
             if (act != STAY)
                 return act;
-        } else if (get_app_msg(st->msg.app)) {
-            r = app_dispatch(st->msg.app);
-            if (r == RESULT_REDRAW) {
-                draw_all(st);
-            } else if (r) {
-                st->result = r;
-                return PASS;
-            }
         } else if (searching(st)) {
             scan(st);                                   /* (its row names are off the stack before more is drawn) */
             scanned(st);
@@ -727,11 +795,25 @@ static u32 open_row(u8 *path_info, int row)
                                     : stock_list_result(path_info, RESULT_PLAYING_START, (u32)row);
 }
 
+/* The screen, with the program's timers held and its colours given back afterwards: run's answer. */
+static inline __attribute__((always_inline)) int show(search_t *st)
+{
+    u32 dc[2];
+    u8 *tag = timer_tag(), keep = *tag;
+    int row;
+
+    ui((uptr)dc, 0, 0, UI_DC_GET);
+    *tag = TAG_SEARCH;
+    row = run(st);
+    *tag = keep;
+    ui(dc[0], 0, 0, UI_PEN);
+    ui(dc[1], 0, 0, UI_BACKGD);
+    return row;
+}
+
 u32 search_list(u8 *path_info)
 {
     search_t st;
-    u32 dc[2];
-    u8 *tag = timer_tag(), keep = *tag;
     const dir_brow_t *b = list_level();
     int row;
 
@@ -739,15 +821,165 @@ u32 search_list(u8 *path_info)
     st.rows = b->dir_total + b->file_total < MAXROWS ? b->dir_total + b->file_total : MAXROWS;
     st.pos = st.rows;
     st.key = 4;                                         /* 5 jkl, in the middle of the keypad */
-    ui((uptr)dc, 0, 0, UI_DC_GET);
-    *tag = TAG_SEARCH;
-    row = run(&st);
-    *tag = keep;
-    ui(dc[0], 0, 0, UI_PEN);
-    ui(dc[1], 0, 0, UI_BACKGD);
+    row = show(&st);
     if (row == PASS)
         return st.result;
     return row > 0 ? open_row(path_info, row) : RESULT_REDRAW;
+}
+
+/* ------------------------------------------------------------------ the library's songs (stage 26) */
+
+/* bytes n of the open file from off on into buf; 1 if they were all there (rd: written into the caller, for the rows
+   the search reads, whose stack is the deepest) */
+static inline __attribute__((always_inline)) int rd(uptr h, u32 off, void *buf, u32 n)
+{
+    vfs(off, SEEK_FROM_SET, h, VFS_SEEK);
+    return (u32)vfs((uptr)buf, n, h, VFS_READ) == n;
+}
+
+static int read_at(uptr h, u32 off, void *buf, u32 n)
+{
+    return rd(h, off, buf, n);
+}
+
+static uptr songs_open(u32 *name)                      /* name: room for 6 words, FF FE "MUSIC.LIB" 0 */
+{
+    name[0] = 0xfeff | 'M' << 16;
+    name[1] = 'U' | 'S' << 16;
+    name[2] = 'I' | 'C' << 16;
+    name[3] = '.' | 'L' << 16;
+    name[4] = 'I' | 'B' << 16;
+    name[5] = 0;
+    vfs(CD_ROOT, 0, 0, VFS_CD);
+    return vfs((uptr)name, OPEN_MODIFY, 0, VFS_OPEN);    /* (only read) */
+}
+
+/* MUSIC.LIB open with its head in head[] (M_HEAD bytes), checked; 0 if missing or not as expected. */
+static uptr songs_file(u32 *head)
+{
+    const u16 *w = (const u16 *)head;
+    u32 size = 0, n;
+    uptr h = songs_open(head);                          /* (head holds the name until it is read) */
+
+    if (!h)
+        return 0;
+    vfs((uptr)&size, h, 0, VFS_SIZE);
+    if (read_at(h, 0, head, M_HEAD)) {
+        n = w[M_SONGS / 2];
+        if (head[0] == 0x4953554d && head[M_ITEM / 4] == 0x534c4c41 && w[M_FIRST / 2] && w[M_ORDER / 2]   /* "MUSI", */
+            && size >= w[M_ORDER / 2] * 512u + 2 * n && size >= w[M_FIRST / 2] * 512u + n * M_REC)       /* "ALLS" */
+            return h;
+    }
+    vfs(h, 0, 0, VFS_CLOSE);
+    return 0;
+}
+
+/* The rows' names from MUSIC.LIB, cut as the browser cuts them (ROW_NAME - 2 bytes and two zeros). */
+static void songs_rows(const search_t *st, u8 names[][NAMELEN], int row, int n)
+{
+    u32 name[6];
+    u16 *rec = (u16 *)name;                             /* the rows' record numbers, once the file is open */
+    uptr h = songs_open(name);
+    int k;
+
+    for (k = 0; k < n; k++)
+        set_bytes(names[k], 0, NAMELEN);
+    if (!h)
+        return;
+    if (rd(h, st->order + 2 * (u32)row, rec, 2 * (u32)n))
+        for (k = 0; k < n; k++)
+            rd(h, st->recs + rec[k] * (u32)M_REC, names[k], NAMELEN - 2);
+    vfs(h, 0, 0, VFS_CLOSE);
+}
+
+/* The number of songs (at most MAXROWS are searched) and where their order and records are; 0 without MUSIC.LIB. */
+static int songs_head(search_t *st)
+{
+    u32 head[M_HEAD / 4];
+    const u16 *w = (const u16 *)head;
+    uptr h = songs_file(head);
+
+    if (!h)
+        return 0;
+    vfs(h, 0, 0, VFS_CLOSE);
+    st->rows = w[M_SONGS / 2] < MAXROWS ? w[M_SONGS / 2] : MAXROWS;
+    st->order = w[M_ORDER / 2] * 512u;
+    st->recs = w[M_FIRST / 2] * 512u;
+    return 1;
+}
+
+/* Back after an add: the letters the kept song spells, for the query line until the first match is found again. */
+static void kept_letters(search_t *st)
+{
+    u8 name[1][NAMELEN] __attribute__((aligned(4)));
+    int span;
+
+    get_rows(st, name, st->want_row - 1, 1);
+    span = match(name[0], st->q, st->qlen);
+    if (span >= 0)
+        spelled(st->pred, name[0], span);
+    else
+        st->want_row = 0;
+}
+
+int search_songs(search_keep_t *keep)
+{
+    search_t st;
+    int row, i;
+
+    set_bytes(&st, 0, sizeof st);
+    if (!songs_head(&st))
+        return SONGS_FAILED;
+    st.pos = st.rows;
+    st.key = 4;
+    if (keep->qlen) {                                   /* back after an add: the same keys, the same line chosen */
+        for (i = 0; i < QMAX / 4; i++)
+            ((u32 *)st.q)[i] = ((const u32 *)keep->q)[i];
+        st.qlen = keep->qlen;
+        st.key = keep->key;
+        st.sel = keep->sel;
+        st.top = keep->top;
+        st.focus = ON_LIST;
+        st.pos = 0;
+        mark_all(&st);
+        st.want = keep->sel;                            /* the screen comes at once: the chosen song shown and Play */
+        st.want_row = (u16)(keep->row + 1);             /* working on it, the others as they are found again */
+        kept_letters(&st);
+    }
+    row = show(&st);
+    for (i = 0; i < QMAX / 4; i++)
+        ((u32 *)keep->q)[i] = ((const u32 *)st.q)[i];
+    keep->qlen = (u8)st.qlen;
+    keep->key = (u8)st.key;
+    keep->sel = (u16)st.sel;
+    keep->top = (u16)st.top;
+    keep->row = (u16)(row - 1);
+    keep->result = st.result;
+    return row > 0 ? SONGS_CHOSEN : row == PASS ? SONGS_PASS : SONGS_LEFT;
+}
+
+int songs_get(int row, u8 *out, int place)
+{
+    u32 head[M_HEAD / 4], at;
+    const u16 *w = (const u16 *)head;
+    u16 rec = 0;
+    uptr h = songs_file(head);
+    int ok;
+
+    if (!place)
+        set_bytes(out, 0, NAMELEN);
+    if (!h)
+        return 0;
+    ok = row >= 0 && row < w[M_SONGS / 2] && read_at(h, w[M_ORDER / 2] * 512u + 2 * (u32)row, &rec, 2)
+         && rec < w[M_SONGS / 2];
+    at = w[M_FIRST / 2] * 512u + rec * (u32)M_REC;
+    if (ok && place)
+        ok = read_at(h, at + M_EXT, out + LOC_EXT, 4) && read_at(h, at + M_CLUSTER, out + LOC_CLUSTER, 8)
+             && read_at(h, at + M_LAYER, out + LOC_LAYER, LAYER_SIZE);
+    else if (ok)
+        ok = read_at(h, at, out, NAMELEN - 2);
+    vfs(h, 0, 0, VFS_CLOSE);
+    return ok;
 }
 
 #ifdef HOST

@@ -134,6 +134,7 @@ typedef struct {                         /* dialog_com_data_t as the stock add r
 #define RESULT_DEL_FAVOR  0x8608
 #define RESULT_CLR_FAVOR  0x8609
 #define RESULT_SEARCH     0x8606         /* stage 25's "Search" rows: the routine of the built-in "Playlist 2" (0x181613e7) */
+#define RESULT_ADD_SONGS  0x8607         /* stage 26's "Add songs" rows: the routine of the built-in "Playlist 3" (0x181613ef) */
 
 /* The keys themselves, for a screen that uses all four directions (the menu key table maps only Up and Down):
    a gui message (8 bytes, SDK input_gui_msg_t) has its type at +0 (0 a key), the key at +2 and the key's event bits

@@ -88,8 +88,10 @@ The file lists (music lists, the folder view, eBook, Video and Picture) are draw
   otherwise the folder's own name.
 - The option key calls a list option callback (`MUSIC.AP` 0x18161000); when the result handler returns 0x8019 or
   0x801a, the control takes the row out and reads itself again. For 0x8014 (redraw) it reads its level again
-  (browser "current"), and the page from its own state (`directory_option_deal`, 0x18ba1d30); any other result
-  leaves the control (0x8601 "Play" plays the selected location), after its place is kept for the level.
+  (browser "current"), and the page from its own state (`directory_option_deal`, 0x18ba1d30), keeping its number of
+  rows: it counts them (lists, songs and menu rows into +12) only in 0x187012bc, which runs when +22 is 1 and also
+  takes the place from the level's history (0x18ba18f8). Code that adds rows sets +12 itself (stage 26). Any other
+  result leaves the control (0x8601 "Play" plays the selected location), after its place is kept for the level.
 - Its own state (`dir_control_t`, `MUSIC.AP` 0x200714): disk +0, file source +1, lines per page +2 (read from the
   style), `dir_com` +4, first and last row shown +8 and +10, all rows +12, the chosen row +14 (rows from 1, the menu
   rows on top included; their number is at 0x20070a), its line on the page +16 and the line before +18, what to do

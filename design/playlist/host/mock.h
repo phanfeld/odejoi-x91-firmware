@@ -45,6 +45,7 @@ extern FILE *draw_log;
 #define APP(r) (APP_EVENT | (r))
 extern int raw_keys, idle_left, volume_popups;
 extern void (*screen_check)(void);                      /* called when the search waits for a key after drawing */
+extern void (*on_snapshot)(int n);                      /* called at SNAP(n) */
 #define BROWSE_NAMES 2
 #define MAX_NAME_ROWS 4200
 struct name_row { u8 b[64]; int n; };

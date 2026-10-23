@@ -451,6 +451,7 @@ void delay_tick(void) {}
 int raw_keys, idle_left, volume_popups, app_result;
 static int app_pending;
 void (*screen_check)(void);
+void (*on_snapshot)(int n);
 static int screen_checked = -1;                         /* fills + strings when the screen was last checked */
 
 int get_gui_msg(void *msg)
@@ -476,6 +477,8 @@ int get_gui_msg(void *msg)
     if (e & SNAP_EVENT) {
         if (draw_log)
             fprintf(draw_log, "snapshot %d\n", e & 0xffff);
+        if (on_snapshot)
+            on_snapshot(e & 0xffff);
         return get_gui_msg(msg);
     }
     if (e & APP_EVENT) {                                   /* a system message comes instead */
