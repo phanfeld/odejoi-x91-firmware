@@ -80,7 +80,7 @@ Compiler flags (`build_stage18.CFLAGS`): `-mcpu=cortex-m4 -mthumb -Os -fno-inlin
   moments (`on_snapshot`), to check what the search shows when it comes back after an add; for the name screen
   (stage 27) keys made from the text to type (`type_keys`: the presses of each letter's key, a second's wait between
   two letters of one key), a millisecond clock that moves 10 ms per wait for a tick, the display driver's text width
-  with the typeface's widths, the screen's layout checked as the search's (the name's line with one caret or one marked
+  with the typeface's widths (asked only with the type the driver reads UTF-16 by), the screen's layout checked as the search's (the name's line with one caret or one marked
   character, the row of the key's characters, the space bars of 0), a create that refuses a name that is there, and a
   disk that can be made full after a number of writes. With `SEARCH_SCREENS=FILE`
   the test writes every drawing call and marked moments to FILE; `host/render.py IMAGE FILE DIR` draws them with the
@@ -156,7 +156,7 @@ Stage 27 (`build_stage27.py`) takes stage 26's code out of its three 0x1a00-grou
 hold 1.9 KB more in all, but in pieces too small for `remove_line`, so "Move song" (but for `move_page`, which
 `list_draw` calls through a pointer) and "Delete" went into the 0x1a00 group too, with the name screen, "New
 playlist" and "Rename", in groups that each fit one tail (up to 920 bytes), placed largest first. 22,798 bytes in 45
-banks in Berry, of them 7,798 in 17 banks of the 0x1a00 group; deepest stack chain 1,008 bytes (the search under "Add
+banks in Berry, of them 7,802 in 17 banks of the 0x1a00 group; deepest stack chain 1,008 bytes (the search under "Add
 songs" or "New playlist"; `m3u_option` keeps the playlist's record number in its frame now).
 
 ## liststyle.c: code in a 0x1200 bank
@@ -282,7 +282,10 @@ below, the chosen key's characters in cells of 12 pixels (the one being typed in
 right-aligned; the keypad with the name screen's labels (`keypad_key` with `KEYS_NAME`: 1 with its first signs, 0
 with a space bar drawn by fills, letters always small). A name longer than the line shows its end: the first
 character shown is the first from which the rest fits 113 pixels, measured by the display driver's own width
-function (function 23, `UI_STR_WIDTH`); the mark of the character being typed is as wide as the driver says.
+function (function 23, `UI_STR_WIDTH`, with the type `TEXT_UNICODE`, 0x7f: with the drawing's 0x7d it reads one byte
+per character, and stage 27 as first flashed measured every name as "ÿþ" and its first letter, about 20 pixels); the
+mark of the character being typed is as wide as the driver says. The texts measured are built in a buffer that holds
+zeros behind them.
 
 **Typing.** A key's characters are a row: its letters (or the signs `- . & ' ( ) !`, or the space) and then its digit;
 their number per key is packed in one constant (`CYCLES`), since a table would be data. Play types the first; Play on

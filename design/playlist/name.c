@@ -78,7 +78,7 @@ static int upper_at(const name_t *n, int pos)
 
 /* ------------------------------------------------------------------ drawing */
 
-/* t: FF FE, w[from .. to), 0 */
+/* t (NAME_UNITS units): FF FE, w[from .. to), zeros (nothing of an earlier text is left behind it) */
 static void part(u16 *t, const u16 *w, int from, int to)
 {
     int i;
@@ -86,17 +86,19 @@ static void part(u16 *t, const u16 *w, int from, int to)
     t[0] = 0xfeff;
     for (i = 0; from + i < to; i++)
         t[1 + i] = w[from + i];
-    t[1 + i] = 0;
+    for (; 1 + i < NAME_UNITS; i++)
+        t[1 + i] = 0;
 }
 
-/* the width in pixels of a text of NAME_UNITS units (UTF-16 with FF FE), as the display driver measures it */
+/* the width in pixels of a text of NAME_UNITS units (UTF-16 with FF FE), as the display driver measures it: the width
+   function takes UTF-16 only as TEXT_UNICODE (fw.h) */
 static int width(const u16 *t)
 {
     strdesc_t d;
 
     set_bytes(&d, 0, sizeof d);
     d.str = (uptr)t;
-    d.lang = TEXT_UTF16;
+    d.lang = TEXT_UNICODE;
     d.length = NAME_UNITS * 2;
     return (int)(ui((uptr)&d, 0xffff, 0, UI_STR_WIDTH) & 0xffff);
 }

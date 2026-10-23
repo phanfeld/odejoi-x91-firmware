@@ -413,10 +413,11 @@ uptr ui(uptr a, uptr b, uptr c, int cmd)
         search_draw(a, b, c, cmd);
         return 1;
     }
-    if (cmd == UI_STR_WIDTH) {                          /* the whole text's width (max: 0xffff), UTF-16 only here */
-        const strdesc_t *d = (const strdesc_t *)a;
-        if (d->lang != TEXT_UTF16 || b != 0xffff || c)
-            fprintf(stderr, "a width asked for language %d, max %u\n", d->lang, (unsigned)b), exit(2);
+    if (cmd == UI_STR_WIDTH) {                          /* the whole text's width (max: 0xffff), UTF-16 only here: */
+        const strdesc_t *d = (const strdesc_t *)a;      /* the driver reads it only as TEXT_UNICODE, anything else */
+        const u16 *t = (const u16 *)d->str;             /* as one byte per character (fw.h) */
+        if (d->lang != TEXT_UNICODE || t[0] != 0xfeff || b != 0xffff || c)
+            fprintf(stderr, "a width asked for language %#x, max %u\n", (unsigned)(u8)d->lang, (unsigned)b), exit(2);
         return (uptr)text_width((const u16 *)d->str, d->length / 2);
     }
     if (cmd == UI_PICTURE) {

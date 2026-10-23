@@ -86,9 +86,12 @@ typedef struct {                         /* where a file is, as VFS_OFFSET repor
 #define NO_ARABIC     (1 << 15)
 /* Stage 27: a text's width (DRV_UI.DRV function 23 at 0x1186fb, the SDK's get_string_length): (strdesc_t *, max,
    result or 0) returns the sum of the characters' widths from the font's own width function, stopping after the
-   first character past max; the string ends at a zero character or after the descriptor's length in bytes, and the
-   FF FE of UTF-16 counts no width. */
+   first character past max; the string ends at a zero character or after the descriptor's length in bytes. UTF-16
+   only as TEXT_UNICODE (0x7f, the SDK's UNICODELANGUAGE), which skips FF FE: any other type, TEXT_UTF16 included,
+   is read one byte per character as code-page text, so a UTF-16 text ends at the zero byte of its first character
+   (stage 27 as first flashed measured "ÿþ" and one letter, about 20 pixels, for every name). */
 #define UI_STR_WIDTH  23
+#define TEXT_UNICODE  0x7f
 typedef struct { u16 x, y, w, h; } region_t;
 
 typedef struct {                         /* string_desc_t, 12 bytes */

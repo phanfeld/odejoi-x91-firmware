@@ -29,9 +29,9 @@ That rules out Rockbox and any system that needs its whole core in RAM.
 4. **Tooling.** `x91_tool.py` dumps the firmware and flashes a theme; `design/build_theme.py` rebuilds every stage
    for every theme from the stock dump, deterministically.
 
-Every stage up to 26 (search and "Add songs") has been flashed and tested on the device; the last stage 24 rebuild
-only as part of the stage 25 and 26 images. Stage 27 ("New playlist" and "Rename" with names typed on the keypad) is
-built but not yet flashed. See {doc}`project/history`.
+Every stage up to 27 (search, "Add songs", "New playlist" and "Rename" with names typed on the keypad) has been
+flashed and tested on the device; the last stage 24 rebuild only as part of the stage 25 to 27 images. See
+{doc}`project/history`.
 
 ## The firmware in one page
 
