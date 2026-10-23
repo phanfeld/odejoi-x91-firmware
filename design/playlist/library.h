@@ -21,6 +21,8 @@ int lib_lists(uptr h);                   /* the number of playlists */
 int lib_order(uptr h, int k);
 /* a playlist's .m3u place and name (UTF-16 with FF FE, 28 units; either may be 0) */
 int lib_list(uptr h, int list, place_t *p, u16 *name);
+/* stage 27: a playlist's record gets another .m3u place and name (UTF-16 with FF FE, cut to its 26 characters) */
+int lib_set_list(uptr h, int list, const place_t *p, const u16 *name);
 int lib_count(uptr h, int list);         /* its number of songs, or -1 */
 /* the song at place pos (from 0) of a playlist: its number and place, or -1 */
 int lib_song(uptr h, int list, int pos, place_t *p);

@@ -38,9 +38,9 @@
 | 24 | `c793fc34…` | menu names wrong or cut off, empty top lines, no counter in album folders |
 | 24 rebuilt | `decde654…` | works, except the eBook list's name and the status bar's delay in sub-menus |
 | 24 rebuilt again | `efa340ee…` | eBook name fine; status bar much faster, but a short blink when a menu or list opens |
-| 24 rebuilt a third time | `82eed591…` | built, not yet flashed |
+| 24 rebuilt a third time | `82eed591…` | never flashed on its own; part of every stage 25 and 26 image |
 
-## 2026-10-23: search, adding songs
+## 2026-10-23: search, adding songs, naming playlists
 
 | Stage | Image (Berry) | Result |
 |---|---|---|
@@ -49,12 +49,15 @@
 | 26 | `00112ce2…` | "Add songs" works; after each add the screen first showed the digits typed and an empty line |
 | 26 rebuilt | `2a25f3eb…` | no digits, but with fewer than four matches the screen waited about 5 s (keys dead) after each add |
 | 26 rebuilt again | `ec287d08…` | the screen at once, keys at once; the new songs show in the playlist only after it is entered again |
-| 26, fourth build | `89137f1b…` | the list's number of rows set after an add; built, not yet flashed |
+| 26, fourth build | `89137f1b…` | works: the new songs show in the playlist at once |
+| 27 | `770fd5fe…` | typing works; the name's line misplaced: the mark of the letter being typed too wide and about 20 pixels too far right, the caret behind the third letter of a longer name, stray letters to the right of the mark (the width function was asked with type 0x7d and read the UTF-16 as single bytes) |
+| 27 rebuilt | `b1f169d1…` | works: the width asked with type 0x7f, the mark and the caret in place, no stray letters |
 
-`x91_dump/themes/themes.json` lists the current image of each theme (stage 26, fourth build: Amber `76f68ef2…`,
-Mint `ded7d030…`, Ice `26612f9f…`, Berry `89137f1b…`). The images of stages 24 and 25 are unchanged (built from the frozen
-sources in `design/playlist/stage24/` and `stage25/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
-`e91c8f53…`, Berry `ee7d8549…`).
+`x91_dump/themes/themes.json` lists the current image of each theme (stage 27 rebuilt: Amber `5fb39a7f…`, Mint
+`2b084b26…`, Ice `7f935828…`, Berry `b1f169d1…`). The images of stages 24 to 26 are unchanged (built from the frozen sources in
+`design/playlist/stage24/`, `stage25/` and `stage26/`; stage 25 rebuilt: Amber `8945629a…`, Mint `2c36fdb9…`, Ice
+`e91c8f53…`, Berry `ee7d8549…`; stage 26, fourth build: Amber `76f68ef2…`, Mint `ded7d030…`, Ice `26612f9f…`, Berry
+`89137f1b…`).
 
 ## Early assumptions that were wrong
 
@@ -69,3 +72,5 @@ Comments in older builders may still reflect these:
 - The engine does have a seek: 0x317 (stage 20).
 - Bytes 0 and 1 of 0x202fbc mean "the music engine runs", playing or paused (stage 24).
 - The volume curve is in the music engine, not in the audio driver (stage 21).
+- The display driver's text width (function 23) takes UTF-16 with the type the string drawing takes, 0x7d: it takes
+  it only as 0x7f (stage 27).

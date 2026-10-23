@@ -9,13 +9,18 @@
  * the song out of that playlist, also after a question. "Move song" shows the playlist's songs with that song
  * chosen: Previous and Next move it, Select leaves it there, Back keeps the order. "Add songs" (stage 26), inside a
  * playlist or on one in the list of playlists, finds songs of the library by the search's keypad; each one chosen
- * goes to the end of that playlist, and the search comes back as it was for the next one.
+ * goes to the end of that playlist, and the search comes back as it was for the next one. "New playlist" (stage 27)
+ * asks for a name on the keypad (name.c), makes "<name>.m3u" and its record, and goes on to "Add songs" for it; in the
+ * list of playlists the list then stands on it. "Rename" (stage 27) asks for the playlist's new name: the file is
+ * copied under that name and the old one removed (the file system's own rename is used by no stock program, so it
+ * is not relied on), and its record in M3U.LIB takes the new name and place.
  *
  * How it hooks in: the list option callback (MUSIC.AP 0x18161000) hands the result of the chosen option row, the
  * browser's path info and the list row the options were opened on to a result handler; build_stage21.py points
  * its two calls (0x1816102e, 0x18161092) to list_option and m3u_option, which pass everything they do not handle
  * to the stock handlers; "Search" (stage 25, 0x8606 in both) goes on to search.c, "Add songs" (stage 26, 0x8607 in
- * Playlists) to add_songs. The option rows are the stock ones
+ * Playlists) to add_songs, "New playlist" and "Rename" (stage 27, 0x8605 and 0x860f in Playlists) to new_playlist and
+ * rename_playlist. The option rows are the stock ones
  * of the built-in playlists and return their codes (add
  * 0x8605, remove 0x8608, clear 0x8609). After a removal the list is told so (RESULT_DELETE_FILE or
  * RESULT_DELETE_DIRLIST): it takes the row out and reads itself again (SDK ui_directory2.c,
@@ -26,8 +31,9 @@
 #include "library.h"
 #include "playlist.h"
 #include "search.h"
+#include "name.h"
 
-#define NAME_UNITS 66                    /* a playlist file's name for removing it */
+#define FNAME_UNITS 66                   /* a playlist file's name for removing it */
 
 /* The name of list row `row` (from 1) as the list shows it, into buf[ROW_NAME + 2]. */
 static void row_name(int row, u8 *buf)
@@ -228,12 +234,12 @@ static u32 remove_selected(u8 *path_info, int active, int list)
 /* Removes the file the file system stands on, by its name (UTF-16 with FF FE, or built from the 8.3 name). */
 static void remove_here(void)
 {
-    u16 fname[NAME_UNITS];
+    u16 fname[FNAME_UNITS];
     u8 t[12];
     int i, n;
 
     set_bytes(fname, 0, sizeof fname);
-    vfs((uptr)fname, NAME_UNITS - 1, 0, VFS_GET_NAME);
+    vfs((uptr)fname, FNAME_UNITS - 1, 0, VFS_GET_NAME);
     if (fname[0] != 0xfeff) {                           /* "NAME    EXT" */
         for (i = 0; i < 11; i++)
             t[i] = ((u8 *)fname)[i];
@@ -566,26 +572,312 @@ static void list_grown(void)
     dc->bottom = (u16)(last < total ? last : total);
 }
 
-static u32 add_songs(int active)
+/* The list stands on browser row `row` (from 1); on the last line of its page if it was not on the page. */
+static void stand_on(int row)
+{
+    dirctl_t *dc = dir_control();
+    int no = row + menu_rows(), page = dc->page, top = dc->top;
+
+    if (row < 1 || no > dc->total || page < 1)
+        return;
+    if (no < top || no >= top + page)
+        top = no - page + 1 > 1 ? no - page + 1 : 1;
+    dc->top = (u16)top;
+    dc->bottom = (u16)(top + page - 1 < dc->total ? top + page - 1 : dc->total);
+    dc->list_no = (u16)no;
+    dc->active = dc->old = (u16)(no - top + 1);
+}
+
+/* "Add songs" to the index-th playlist (its record list); made: the playlist was just made by "New playlist", and in
+ * the list of playlists the list then stands on it (the last row: a record added goes to the end of the order). */
+static u32 add_songs(int index, int list, int made)
 {
     search_keep_t keep;
-    int list, index = add_target(active, &list), r, status, added = 0;
+    int r, status;
 
-    if (index < 0) {
-        dialog_text(0x8000, 2, S_OPEN_FAILED);
-        return RESULT_REDRAW;
-    }
     set_bytes(&keep, 0, sizeof keep);
+    made = made ? 2 : 0;                                /* and bit 0: a song was added (one register less) */
     while ((r = search_songs(&keep)) == SONGS_CHOSEN) { /* the song is added after the screen's frame has gone */
         status = add_found(index, keep.row);
-        added |= status == ADDED;
+        made |= status == ADDED;
         add_said(list, keep.row, status);
     }
-    if (added)
+    if (made)
         list_grown();
+    if (made & 2 && m3u_list() >= LISTS_MAX)
+        stand_on(list_rows(0));
     if (r == SONGS_FAILED)
         dialog_text(0x8000, 2, S_OPEN_FAILED);
     return r == SONGS_PASS ? keep.result : RESULT_REDRAW;
+}
+
+/* ------------------------------------------------------------------ naming playlists (stage 27) */
+
+#define FILE_UNITS (NAME_MAX + 8)        /* FF FE, a name (with a "~" in front), ".m3u", 0 */
+#define COPY_BUF   192                   /* bytes copied at a time (the rename's chain of frames stays below the search's) */
+enum { ST_DONE = 0, ST_FAILED = -1, ST_TAKEN = -2 };
+enum { NEW_LEFT = -1, NEW_PASS = -2 };
+
+/* "<name>.m3u" (UTF-16 with FF FE) for a name of up to NAME_MAX + 1 characters */
+static void m3u_file(u16 *f, const u16 *name)
+{
+    int i;
+
+    f[0] = 0xfeff;
+    for (i = 0; i <= NAME_MAX && name[1 + i]; i++)
+        f[1 + i] = name[1 + i];
+    put4(f, 1 + i, '.' | 'm' << 8 | '3' << 16 | (u32)'u' << 24);
+}
+
+/* The index among the root's .m3u files of the one called name (UTF-16 with FF FE, without ".m3u"; the letter case
+ * aside, as the file system has it), standing on it, its place in *p; -1 if there is none. */
+static int find_named(const u16 *name, place_t *p)
+{
+    u8 tmp[96] __attribute__((aligned(4)));
+    int type = DIR_HEAD, k = 0, n, i, guard;
+    u32 c;
+
+    vfs(CD_ROOT, 0, 0, VFS_CD);
+    for (guard = 0; guard < MAX_ENTRIES; guard++) {
+        u32 ext = (u32)vfs(type, 0, EXT_ALL_FILES, VFS_DIR);
+        if (!ext)
+            break;
+        type = DIR_NEXT;
+        if (!is_m3u(ext))
+            continue;
+        n = playlist_name(tmp, 96);                     /* (one-byte text: other characters as '?') */
+        for (i = 0; i < n; i++) {
+            c = name[1 + i];
+            if (!c || upper(c > 0xff ? '?' : c) != upper(tmp[i]))
+                break;
+        }
+        if (i == n && !name[1 + n]) {
+            if (p)
+                vfs((uptr)p->layer, (uptr)&p->cluster, 0, VFS_OFFSET);
+            return k;
+        }
+        k++;
+    }
+    return -1;
+}
+
+/* The file at *src (a root .m3u) copied into a new file dst (UTF-16 with FF FE) of the root folder, a piece at a time
+ * with one file open, each time standing on the source by walking the folder (as "Delete" finds a playlist): 1, or 0
+ * with nothing new left behind. A file of that name already there is left alone. */
+static int copy_to(const place_t *src, const u16 *dst)
+{
+    u8 buf[COPY_BUF] __attribute__((aligned(4)));
+    u32 off = 0, size = 0, n, done;
+    int ok = 0;
+    uptr h;
+
+    vfs(CD_ROOT, 0, 0, VFS_CD);
+    h = vfs((uptr)dst, OPEN_MODIFY, 0, VFS_OPEN);
+    if (h) {
+        vfs(h, 0, 0, VFS_CLOSE);
+        return 0;
+    }
+    h = vfs((uptr)dst, 0, 0, VFS_CREATE);
+    if (!h)
+        return 0;
+    vfs(h, 0, 0, VFS_CLOSE);
+    for (;;) {
+        if (find_playlist_at(src) < 0)
+            break;
+        h = vfs(0, OPEN_MODIFY, 0, VFS_OPEN);
+        if (!h)
+            break;
+        vfs((uptr)&size, h, 0, VFS_SIZE);
+        n = off >= size ? 0 : size - off < COPY_BUF ? size - off : COPY_BUF;
+        vfs(off, SEEK_FROM_SET, h, VFS_SEEK);
+        done = n ? (u32)vfs((uptr)buf, n, h, VFS_READ) : 0;
+        vfs(h, 0, 0, VFS_CLOSE);
+        if (done != n)
+            break;
+        if (!n) {
+            ok = 1;
+            break;
+        }
+        vfs(CD_ROOT, 0, 0, VFS_CD);
+        h = vfs((uptr)dst, OPEN_MODIFY, 0, VFS_OPEN);
+        if (!h)
+            break;
+        vfs(off, SEEK_FROM_SET, h, VFS_SEEK);
+        done = (u32)vfs((uptr)buf, n, h, VFS_WRITE);
+        vfs(h, 0, 0, VFS_CLOSE);
+        if (done != n)
+            break;
+        off += n;
+    }
+    if (!ok) {
+        vfs(CD_ROOT, 0, 0, VFS_CD);
+        vfs((uptr)dst, FS_FILE, 0, VFS_REMOVE);
+    }
+    return ok;
+}
+
+/* The playlist file at *m3u under the name name: copied, the old file removed, then its record (record list) with the
+ * new name and place, which go to *m3u. 1 if all of it was done; else the file and the record agree as far as it got. */
+static int move_file(int list, place_t *m3u, const u16 *name)
+{
+    u16 f[FILE_UNITS];
+    int ok = 0;
+    uptr h;
+
+    m3u_file(f, name);
+    if (!copy_to(m3u, f))
+        return 0;
+    if (find_playlist_at(m3u) >= 0)                     /* (it stands on it) */
+        remove_here();
+    if (find_named(name, m3u) < 0)                      /* (the old place is of no use now) */
+        return 0;
+    h = lib_open();
+    if (h) {
+        ok = lib_set_list(h, list, m3u, name);
+        lib_close(h);
+    }
+    return ok;
+}
+
+/* The playlist of record list, its file at *m3u, renamed name: ST_DONE, ST_TAKEN (another playlist has that name) or
+ * ST_FAILED. When only the letter case changes, it is renamed twice, by a name with a "~" in front first (into tmp,
+ * NAME_UNITS + 1 units): the file system takes the new name for the old one. */
+static int rename_file(int list, place_t *m3u, const u16 *name, u16 *tmp)
+{
+    place_t p;
+    int at = find_named(name, &p), status = ST_FAILED, paused, i;
+
+    if (at >= 0 && (p.cluster != m3u->cluster || p.entry != m3u->entry))
+        return ST_TAKEN;
+    paused = pause_playing();
+    if (at >= 0) {
+        tmp[0] = 0xfeff;
+        tmp[1] = '~';
+        for (i = 1; i <= NAME_MAX && name[i]; i++)
+            tmp[1 + i] = name[i];
+        tmp[1 + i] = 0;
+        if (find_named(tmp, 0) < 0 && move_file(list, m3u, tmp) && move_file(list, m3u, name))
+            status = ST_DONE;
+    } else if (move_file(list, m3u, name)) {
+        status = ST_DONE;
+    }
+    if (paused)
+        engine_resume();
+    return status;
+}
+
+/* "Rename": the playlist the list is in, or the one on list row `active` in the list of playlists. */
+static u32 rename_playlist(int active)
+{
+    u16 name[NAME_UNITS], was[NAME_UNITS + 1];          /* (was: the record's 28 units; then rename_file's) */
+    place_t m3u, keep;
+    u32 result = RESULT_REDRAW;
+    int list, r, status, i, ok = 0;
+    uptr h;
+
+    if (add_target(active, &list) >= 0) {
+        h = lib_open();
+        if (h) {
+            ok = lib_list(h, list, &m3u, was);
+            lib_close(h);
+        }
+    }
+    if (!ok) {
+        dialog_text(0x8000, 2, S_OPEN_FAILED);
+        return RESULT_REDRAW;
+    }
+    for (i = 0; i < NAME_UNITS - 1 && (!i || was[i]); i++)
+        name[i] = was[i];
+    name[i] = 0;
+    for (;;) {
+        r = name_entry(name, NAME_RENAME, &result);
+        if (r != NAME_OK)
+            return r == NAME_PASS ? result : RESULT_REDRAW;
+        for (i = 0; name[i] == was[i] && name[i]; i++)
+            ;
+        if (name[i] == was[i])                          /* the same name */
+            return RESULT_REDRAW;
+        vfs((uptr)keep.layer, (uptr)&keep.cluster, 0, VFS_OFFSET);
+        status = rename_file(list, &m3u, name, was);
+        vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+        if (status != ST_TAKEN)
+            break;
+        say(S_NAME_TAKEN, (const u8 *)name, 0, 0, 0);  /* (was is still the record's name: only a rename writes it) */
+    }
+    if (status != ST_DONE)
+        dialog_text(0x8000, 2, S_OPEN_FAILED);
+    return RESULT_REDRAW;                               /* the list reads its rows again: the new name */
+}
+
+/* "<name>.m3u" made in the root folder, empty, with its record in M3U.LIB: its index among the root's .m3u files and
+ * the record in *list; ST_TAKEN if a playlist of that name is there; ST_FAILED, and no new file left. */
+static int make_playlist(const u16 *name, int *list)
+{
+    u16 f[FILE_UNITS];
+    u8 one[NAME_MAX];
+    place_t keep, p;
+    int index = ST_TAKEN, paused, n;
+    uptr h;
+
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 0, VFS_OFFSET);
+    if (find_named(name, 0) < 0) {
+        paused = pause_playing();
+        m3u_file(f, name);
+        vfs(CD_ROOT, 0, 0, VFS_CD);
+        h = vfs((uptr)f, OPEN_MODIFY, 0, VFS_OPEN);    /* any file of that name */
+        if (h)
+            vfs(h, 0, 0, VFS_CLOSE);
+        else if ((h = vfs((uptr)f, 0, 0, VFS_CREATE)) == 0)
+            index = ST_FAILED;
+        else {
+            vfs(h, 0, 0, VFS_CLOSE);
+            index = find_named(name, &p);
+            *list = -1;
+            h = index >= 0 ? lib_open() : 0;
+            if (h) {
+                for (n = 0; n < NAME_MAX && name[1 + n]; n++)
+                    one[n] = (u8)name[1 + n];       /* (a typed name is ASCII) */
+                *list = lib_add_list(h, &p, one, n);
+                lib_close(h);
+            }
+            if (*list < 0) {                            /* no record: the file goes again */
+                if (index >= 0 && find_playlist_at(&p) >= 0)
+                    remove_here();
+                index = ST_FAILED;
+            }
+        }
+        if (paused)
+            engine_resume();
+    }
+    vfs((uptr)keep.layer, (uptr)&keep.cluster, 1, VFS_OFFSET);
+    return index;
+}
+
+/* "New playlist": a name on the keypad, then the playlist (make_playlist). The new file's index among the root's .m3u
+ * files (its record to *list); NEW_LEFT when there is none (Return, or a message said why), NEW_PASS with a system
+ * message's result in *list. */
+static int new_playlist(int *list)
+{
+    u16 name[NAME_UNITS];
+    u32 result = 0;
+    int r, index;
+
+    name[0] = 0xfeff;
+    name[1] = 0;
+    for (;;) {
+        r = name_entry(name, NAME_NEW, &result);
+        if (r != NAME_OK) {
+            *list = (int)result;
+            return r == NAME_PASS ? NEW_PASS : NEW_LEFT;
+        }
+        index = make_playlist(name, list);
+        if (index != ST_TAKEN)
+            break;
+        say(S_NAME_TAKEN, (const u8 *)name, 0, 0, 0);  /* and the name again, to change it */
+    }
+    if (index < 0)
+        dialog_text(0x8000, 2, S_OPEN_FAILED);
+    return index < 0 ? NEW_LEFT : index;
 }
 
 /* ------------------------------------------------------------------ the result handlers */
@@ -628,13 +920,28 @@ static u32 m3u_edit(u8 *path_info, u32 check, u32 active)
     return RESULT_REDRAW;
 }
 
-/* The Playlists list's options (MUSIC.AP 0x18161092). "Search" (stage 25) and "Add songs" (stage 26) go on from here
- * with the least stack. */
+/* The Playlists list's options (MUSIC.AP 0x18161092). "Search" (stage 25), "Add songs" (stage 26) and "New playlist"
+ * (stage 27, which goes on to "Add songs") go on from here with the least stack. */
 u32 m3u_option(u8 *path_info, u32 check, u32 active)
 {
+    int list = -1, index;
+
     if (check == RESULT_SEARCH)
         return search_list(path_info);
-    if (check == RESULT_ADD_SONGS)
-        return add_songs((int)active);
-    return m3u_edit(path_info, check, active);
+    if (check == RESULT_RENAME)
+        return rename_playlist((int)active);
+    if (check == RESULT_ADD_SONGS) {
+        index = add_target((int)active, &list);
+        if (index < 0) {
+            dialog_text(0x8000, 2, S_OPEN_FAILED);
+            return RESULT_REDRAW;
+        }
+    } else if (check == RESULT_NEW_LIST) {
+        index = new_playlist(&list);                    /* (its frame is gone before the search's comes) */
+        if (index < 0)
+            return index == NEW_PASS ? (u32)list : RESULT_REDRAW;
+    } else {
+        return m3u_edit(path_info, check, active);
+    }
+    return add_songs(index, list, check == RESULT_NEW_LIST);
 }

@@ -12,5 +12,8 @@
 | Volume bar shown briefly with the screen off | not started |
 | Remote buttons (cable, Bluetooth) | depends on the hardware; AVRCP goes through `BTENGINE.AP` |
 | Folder play repeats the title | in folder play the third line of the playing screen repeats the title |
+| A name for "New playlist" in "Add to playlist" | the picker's "New playlist" (playing screen, song lists) still makes "New playlist N"; it could open the name screen of stage 27 first |
+| "New playlist" with no playlists | the Playlists list with no `.m3u` cannot be opened, so neither can its options; "Add to playlist" makes the first one |
+| Letters beyond ASCII in names | the name screen types ASCII only; how the file system makes short names for other letters is not known |
 
 The flashing tool's separate Dump job has not been run on a device yet.

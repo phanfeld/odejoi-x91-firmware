@@ -28,7 +28,10 @@ int bar_clears, last_clear_pic, last_clear_x, last_clear_y, cleared_first;   /* 
 static int clear_pending;
 char shown[6][64];
 char last_message[256];
-int events[64], event_count, event_next;
+int events[MAX_EVENTS], event_count, event_next;
+u32 clock_ms;
+int created_over;
+int write_limit = -1;
 
 void node_room(int node, u32 size)
 {
@@ -228,6 +231,11 @@ uptr vfs(uptr a, uptr b, uptr c, int cmd)
                 refused_opens++;
                 return 0;
             }
+        for (k = 0; (e = child(cur_dir, k)) >= 0; k++)     /* the SDK's create refuses a name that is there */
+            if (same_name(nodes[e].name, w)) {
+                created_over++;
+                return 0;
+            }
         e = add_node(cur_dir, name, 0, NULL);
         cur_entry = index_in(cur_dir, e);
         return (uptr)new_handle(e);
@@ -254,6 +262,10 @@ uptr vfs(uptr a, uptr b, uptr c, int cmd)
         struct node *n = &nodes[handles[c].node];
         if (status == PLAY_PLAYING)
             writes_while_playing++;
+        if (write_limit == 0)
+            return 0;
+        if (write_limit > 0)
+            write_limit--;
         node_room(handles[c].node, handles[c].pos + (u32)b);
         memcpy(n->data + handles[c].pos, (void *)a, b);
         handles[c].pos += (u32)b;
@@ -383,11 +395,30 @@ long colour_at(int x, int y)
     return -1;
 }
 
+/* The widths of the player's typeface (UNICODE.FON of the Graphite images, stage 2) for ' ' to '~'; others 7. */
+static const char WIDTHS[] = "34587b93546734377777777777337776c9889778936879898987889c888574784676775773474a787766577a"
+                             "7765357";
+
+int text_width(const u16 *t, int units)
+{
+    int i, w = 0;
+    for (i = t[0] == 0xfeff ? 1 : 0; i < units && t[i]; i++)
+        w += t[i] >= ' ' && t[i] <= '~' ? (WIDTHS[t[i] - ' '] <= '9' ? WIDTHS[t[i] - ' '] - '0' : WIDTHS[t[i] - ' '] - 'a' + 10) : 7;
+    return w;
+}
+
 uptr ui(uptr a, uptr b, uptr c, int cmd)
 {
     if (cmd >= UI_DC_GET && cmd <= UI_STRING) {
         search_draw(a, b, c, cmd);
         return 1;
+    }
+    if (cmd == UI_STR_WIDTH) {                          /* the whole text's width (max: 0xffff), UTF-16 only here: */
+        const strdesc_t *d = (const strdesc_t *)a;      /* the driver reads it only as TEXT_UNICODE, anything else */
+        const u16 *t = (const u16 *)d->str;             /* as one byte per character (fw.h) */
+        if (d->lang != TEXT_UNICODE || t[0] != 0xfeff || b != 0xffff || c)
+            fprintf(stderr, "a width asked for language %#x, max %u\n", (unsigned)(u8)d->lang, (unsigned)b), exit(2);
+        return (uptr)text_width((const u16 *)d->str, d->length / 2);
     }
     if (cmd == UI_PICTURE) {
         if (draw_log)
@@ -444,7 +475,8 @@ uptr ui(uptr a, uptr b, uptr c, int cmd)
     return 0;
 }
 
-void delay_tick(void) {}
+void delay_tick(void) { clock_ms += 10; }
+u32 now_ms(void) { return clock_ms; }
 
 /* The key queue holds menu events (the menu key table's), or for the search raw key messages (RAW_KEY), stretches
    with no message (IDLE: the search goes on in them), and marks for the draw log (SNAP). */

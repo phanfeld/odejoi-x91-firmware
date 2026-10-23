@@ -32,6 +32,7 @@ code. The {doc}`../project/history` page lists what went onto the player and whe
 | 24 | the lists' top line: menu names, list names, counter only in an album or playlist; short menu texts; status bar right after a list, its marks without a blink | `COMMON.STY`, five programs, ten style files, `MUSIC.MCG`, `SETTING.MCG`, 15 programs | yes |
 | 25 | Search with a T9 keypad in the options of the music lists | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
 | 26 | "Add songs" in the Playlists options: songs of the library by the keypad, to that playlist | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
+| 27 | "New playlist" and "Rename" in the Playlists options: the name typed on the keypad, a new playlist goes on to "Add songs" | `MUSIC.AP`, `MUSIC.MCG`, `MUSIC.STY` | yes |
 
 ## Stage notes
 
@@ -101,4 +102,28 @@ tails: the parts only "Add songs" runs went into tails of the 0x1a00 group.
 :alt: Add songs in Berry: "Sta" typed; at once after the sixth of eight was added; four of them found again; all found again
 "Add songs" as the host test draws it (Berry): 7-8-2 typed; at once after the sixth of eight "Wonder" songs was
 added, the chosen song on its line; four found again; all eight.
+```
+
+**27: New playlist, Rename.** The Playlists options have two more rows behind "Add songs". "New playlist" asks for a
+name and makes `<name>.m3u` in the root folder with its record in `M3U.LIB`, then opens "Add songs" for it; in the
+list of playlists the list stands on the new one afterwards. "Rename", on a playlist in the list of playlists or
+inside one, asks for the new name with the old one filled in. The name is typed on the search's keypad as on a phone
+before T9 (`name.c`): Play on a key types its first letter, Play again within a second takes the next one in its place
+(2: a, b, c, 2), held it types the digit; 1 has `- . & ' ( ) !`, 0 the space. Under the name, the chosen key's
+characters in a row, the one being typed marked, and the letter case on the right: "Abc" (a capital at the start and
+after a space), "abc" or "ABC", switched by Menu; the keys keep their small letters ("PQRS" and "WXYZ" are wider than
+their place). Del and Return delete the last character, held all of them; Return on an empty name leaves; OK takes
+the name without spaces at its ends. A name has at most 26 characters, as many as its record holds; a name another
+playlist has (the letter case aside) brings a message and the screen again. The file system's own rename (command
+20) is used by no stock program, so it is not relied on: a rename copies the file under the new name, a piece at a
+time with one file open, removes the old one and gives the record the new name and place; a change of the letter case
+alone goes through a name with a "~" in front, since the file system takes the new name for the old one. The code no
+longer fits the 0x1000 group's tails: the name screen, both actions, "Move song" and "Delete" went into tails of the
+0x1a00 group.
+
+```{figure} ../../design/stage27-preview.png
+:alt: The name screen in Berry: New playlist, empty; "Road Trip" with the p being typed; C typed by three presses of 2; Rename with FOCUS in capitals; Rename with the old name NothingMuch
+The name screen as the host test draws it (Berry): "New playlist", empty; "Road Trip", the p still being typed on 7
+(its row p q r s 7 below); three presses of 2 give C; "Rename" in capitals; "Rename" as it opens, the old name filled
+in.
 ```

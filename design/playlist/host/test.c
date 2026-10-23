@@ -12,7 +12,9 @@
 #include "../fw.h"
 #include "../library.h"
 #include "../search.h"
+#include "../name.h"
 #include "mock.h"
+#undef LINE                                             /* the screen's line height (search.h): here LINE is a song's path */
 
 static int failures;
 
@@ -1692,17 +1694,551 @@ static void test_add_songs(void)
     on_snapshot = NULL;
 }
 
+
+/* ------------------------------------------------------------------ naming playlists (stage 27) */
+
+#define K_OF(d) ((d) ? (d) - 1 : K_ZERO)                /* the keypad's key of a digit */
+#define HELD_BACK_1 RAW_KEY(KEY_RETURN, KT_DOWN)        /* HELD_BACK, one by one */
+#define HELD_BACK_2 RAW_KEY(KEY_RETURN, KT_LONG)
+#define HELD_BACK_3 RAW_KEY(KEY_RETURN, KT_HOLD)
+#define HELD_BACK_4 RAW_KEY(KEY_RETURN, 0x0200)
+#define NAME_TEXT_X 6
+#define CASE_TEXT_X 98
+
+static int at_key, tapped;                              /* where the keys made by type_keys stand */
+
+static void push(int e)
+{
+    if (event_count >= MAX_EVENTS)
+        fprintf(stderr, "too many keys\n"), exit(2);
+    events[event_count++] = e;
+}
+
+static void push_press(int key)
+{
+    push(RAW_KEY(key, KT_DOWN));
+    push(RAW_KEY(key, KT_SHORT_UP));
+}
+
+static void start_keys(void)
+{
+    event_count = event_next = 0;
+    at_key = 4;                                         /* both screens open on 5 jkl */
+    tapped = 0;
+}
+
+static void go_key(int k)
+{
+    while (at_key / 3 > k / 3)
+        push(RAW_KEY(KEY_UP, KT_DOWN)), at_key -= 3;
+    while (at_key / 3 < k / 3)
+        push(RAW_KEY(KEY_DOWN, KT_DOWN)), at_key += 3;
+    while (at_key % 3 != k % 3)
+        push(RAW_KEY(KEY_NEXT, KT_DOWN)), at_key = at_key / 3 * 3 + (at_key % 3 + 1) % 3;
+}
+
+/* The keys that type s on the name screen: a letter as often as its place on its key (its case is the screen's), a
+   digit held, the space on 0, the signs on 1, a wait of a second between two characters of one key; '|' is Menu (the
+   next letter case), '<' Return, '#' a wait. */
+static void type_keys(const char *s)
+{
+    static const char *signs = "-.&'()!";
+    const char *at;
+    int c, d, i;
+
+    for (; *s; s++) {
+        c = tolower_ascii(*s);
+        if (c == '|' || c == '<' || c == '#') {
+            if (c == '#')
+                push(IDLE(101));
+            else
+                push_press(c == '|' ? KEY_MENU : KEY_RETURN);
+            tapped = c == '|' && tapped;
+            continue;
+        }
+        if (c >= '0' && c <= '9') {
+            d = c - '0';
+            i = -1;
+        } else if (c == ' ') {
+            d = i = 0;
+        } else if ((at = strchr(signs, c)) != NULL) {
+            d = 1;
+            i = (int)(at - signs);
+        } else {
+            c -= 'a';
+            d = c < 15 ? 2 + c / 3 : c < 19 ? 7 : c < 22 ? 8 : 9;
+            i = c < 15 ? c % 3 : c < 19 ? c - 15 : c < 22 ? c - 19 : c - 22;
+        }
+        if (tapped && K_OF(d) == at_key)
+            push(IDLE(101));
+        go_key(K_OF(d));
+        if (i < 0) {
+            push(RAW_KEY(KEY_PLAY, KT_DOWN));
+            push(RAW_KEY(KEY_PLAY, KT_LONG));
+            push(RAW_KEY(KEY_PLAY, 0x0200));
+        } else {
+            for (c = 0; c <= i; c++)
+                push_press(KEY_PLAY);
+        }
+        tapped = i >= 0;
+    }
+}
+
+static void ok_key(void)
+{
+    go_key(K_OK);
+    push_press(KEY_PLAY);
+    at_key = 4;                                         /* the next screen starts on 5 again */
+    tapped = 0;
+}
+
+/* the search's keys (the digits typed) */
+static void search_keys(const char *digits)
+{
+    for (; *digits; digits++) {
+        go_key(K_OF(*digits - '0'));
+        push_press(KEY_PLAY);
+    }
+}
+
+/* the texts on line y between x0 and x1, left to right */
+static void line_texts(int y, int x0, int x1, char *out, int room)
+{
+    int i, x, best, n = 0;
+    out[0] = 0;
+    for (x = x0; x < x1; x = best + 1) {
+        best = 9999;
+        for (i = 0; i < text_count; i++)
+            if (texts[i].y == y && texts[i].x >= x && texts[i].x < x1 && texts[i].x < best)
+                best = texts[i].x;
+        if (best == 9999)
+            break;
+        n += snprintf(out + n, (size_t)(room - n), "%s", text_at(best, y));
+    }
+}
+
+/* The name screen below the status bar as the design has it: the name's line in the background colour, with the
+   caret (1 x 10 at row 19) or the character being typed in the accent (rows 16 to 30), and its underline in the accent;
+   the chosen key's characters in cells of 12 at x = 2, at most one cell in the accent; the keypad as the search's, one
+   key in the accent; the space bars of 0 (on its key and as its first character) in the key's text colour. The fills
+   alone draw the same. */
+static long name_layout_at(int x, int y, int key, int cell)
+{
+    int row = (y - 96) / 16, ky = (y - 96) % 16, col = (x - 1) / 42, cx, k = row * 3 + col, bx;
+    long pen;
+    if (y < 31)
+        return -1;                                      /* the name's line: checked on its own */
+    if (y == 31)
+        return x >= 4 && x < 124 ? COL_ACCENT : COL_BG;
+    if (y < 48) {
+        if (y == 47 || x < 2 || x >= 2 + 8 * 12)
+            return COL_BG;
+        cx = (x - 2) / 12;
+        pen = cx == cell ? COL_ON_ACCENT : COL_TEXT;
+        bx = x - (2 + 2);                               /* 0's space as its first character: 8 wide at row 44 */
+        if (key == K_ZERO && cx == 0 && ((y == 44 && bx >= 0 && bx < 8) || ((bx == 0 || bx == 7) && y >= 41 && y < 44)))
+            return pen;
+        return cx == cell ? COL_ACCENT : COL_BG;
+    }
+    if (y < 96)
+        return COL_BG;
+    if (ky == 15 || x < 1 || (x - 1) % 42 == 41 || col > 2)
+        return COL_BG;
+    bx = x - (1 + 42 + KEY_W - LETTERS_W + SPACE_BAR_X);   /* 0's space bar on its key */
+    if (k == K_ZERO && ((ky == SPACE_BAR_Y && bx >= 0 && bx < SPACE_BAR_W)
+                        || ((bx == 0 || bx == SPACE_BAR_W - 1) && ky >= SPACE_BAR_Y - 3 && ky < SPACE_BAR_Y)))
+        return k == key ? COL_ON_ACCENT : COL_TEXT2;
+    return k == key ? COL_ACCENT : COL_SURFACE;
+}
+
+static void check_name_layout(void)
+{
+    int key = -1, cell = -1, i, x, y, x0 = 128, x1 = -1, y0 = 160, y1 = -1;
+    long want;
+    for (i = 0; i < 12; i++)
+        if (fill_at(2 + i % 3 * 42, 97 + i / 3 * 16) == COL_ACCENT)
+            key = i;
+    for (i = 0; i < 8; i++)
+        if (fill_at(3 + 12 * i, 33) == COL_ACCENT)
+            cell = cell < 0 ? i : 99;
+    if (layout_failed)
+        return;
+    if (key < 0 || cell == 99) {
+        layout_failed = 1;
+        CHECK(0, "name screen: accent key %d, marked character %d", key, cell);
+        return;
+    }
+    for (y = 16; y < 31; y++)                           /* the name's line: one accent shape */
+        for (x = 0; x < 128; x++) {
+            if (fill_at(x, y) == COL_ACCENT) {
+                x0 = x < x0 ? x : x0, x1 = x > x1 ? x : x1;
+                y0 = y < y0 ? y : y0, y1 = y > y1 ? y : y1;
+            } else if (fill_at(x, y) != COL_BG) {
+                x1 = -2;
+            }
+        }
+    if (x1 >= 0)
+        for (y = y0; y <= y1; y++)
+            for (x = x0; x <= x1; x++)
+                if (fill_at(x, y) != COL_ACCENT)
+                    x1 = -2;
+    if (x1 < 0 || !(y0 == 16 && y1 == 30) == !(x0 == x1 && y0 == 19 && y1 == 28)) {
+        layout_failed = 1;
+        CHECK(0, "name screen: the name's line has an accent at %d..%d, %d..%d", x0, x1, y0, y1);
+        return;
+    }
+    for (y = 16; y < 160; y++)
+        for (x = 0; x < 128; x++) {
+            want = name_layout_at(x, y, key, cell);
+            if ((want >= 0 && fill_at(x, y) != want) || fill_only_at(x, y) != fill_at(x, y)) {
+                layout_failed = 1;
+                CHECK(0, "name screen: %d,%d is %#lx (by fills %#lx), not %#lx (key %d, character %d)", x, y,
+                      fill_at(x, y), fill_only_at(x, y), want, key, cell);
+                return;
+            }
+        }
+}
+
+static void check_screens(void)
+{
+    const char *title = text_at(TITLE_TEXT_X, 0);
+    if (!strcmp(title, "New playlist") || !strcmp(title, "Rename"))
+        check_name_layout();
+    else
+        check_layout();
+}
+
+/* the name screen at SNAP(n) */
+struct name_snap { char title[32], name[64], cycle[64], mode[8], key2[8]; int pending, caret; };
+static struct name_snap nsnaps[32];
+static void remember_name(int n)
+{
+    struct name_snap *sn = &nsnaps[n & 31];
+    int x;
+    snprintf(sn->title, sizeof sn->title, "%s", text_at(TITLE_TEXT_X, 0));
+    line_texts(Y_QUERY, 0, 128, sn->name, sizeof sn->name);
+    line_texts(Y_LIST, 0, CASE_TEXT_X, sn->cycle, sizeof sn->cycle);
+    snprintf(sn->mode, sizeof sn->mode, "%s", text_at(CASE_TEXT_X, Y_LIST));
+    snprintf(sn->key2, sizeof sn->key2, "%s", text_at(1 + 42 + KEY_W - LETTERS_W, Y_KEY(0)));
+    sn->pending = sn->caret = -1;
+    if (getenv("NAME_DEBUG")) {
+        int i;
+        printf("snap %d:", n);
+        for (i = 0; i < text_count; i++)
+            if (texts[i].y == 16)
+                printf(" [%d:%s]", texts[i].x, texts[i].s);
+        printf("\n");
+    }
+    for (x = 127; x >= 0; x--) {
+        if (fill_at(x, 17) == COL_ACCENT)
+            sn->pending = x;                            /* (its left edge) */
+        if (fill_at(x, 22) == COL_ACCENT && fill_at(x, 17) == COL_BG)
+            sn->caret = x;
+    }
+}
+
+static int alive(const char *name)                       /* the file of that name in the root, or -1 */
+{
+    int i;
+    for (i = 1; i < node_count; i++)
+        if (nodes[i].parent == 0 && !nodes[i].gone && !strcmp(nodes[i].name, name))
+            return i;
+    return -1;
+}
+
+static int has_text(int node, const char *want)
+{
+    return node >= 0 && nodes[node].size == strlen(want) && !memcmp(nodes[node].data, want, nodes[node].size);
+}
+
+static void test_names(void)
+{
+    static char long_text[700];
+    u8 pi[128];
+    char want[256];
+    dir_brow_t b;
+    int all[8], n = 0, k, before, wide;
+    u32 r;
+
+    disk();
+    all[n++] = find("01 - 4-30.mp3");
+    all[n++] = find("x.mp3");
+    all[n++] = find("02 - Love Left (original mix).mp3");
+    all[n++] = song;
+    songs_library(all, n);
+    browse_mode = BROWSE_M3U;
+    m3u_cur = 0xffff;
+    memset(pi, 0, sizeof pi);
+    pi[0] = FSEL_M3U;
+    screen_reset();
+    raw_keys = 1;
+    on_snapshot = remember_name;
+    created_over = 0;
+
+    /* "New playlist" in the list of playlists: "Road Trip" (a capital after the space by itself), then the search of
+       "Add songs" for it: 7-8-2 and Menu, Play add Stardust; Return leaves; the list stands on the new playlist */
+    start_keys();
+    push(SNAP(1));
+    type_keys("Road Trip");
+    push(SNAP(2));
+    ok_key();
+    search_keys("782");
+    push(IDLE(5));
+    push_press(KEY_MENU);
+    push_press(KEY_PLAY);
+    push(IDLE(5));
+    push(HELD_BACK_1), push(HELD_BACK_2), push(HELD_BACK_3), push(HELD_BACK_4);
+    push_press(KEY_RETURN);
+    list_at(2, 6);
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    k = alive("Road Trip.m3u");
+    CHECK(r == RESULT_REDRAW && has_text(k, LINE) && m3u_row("Road Trip") == 3, "new: %#x, file %d", r, k);
+    check_library(__LINE__);
+    CHECK(!strcmp(last_message, "text 12: \"01 - Stardust (original \", Road Trip"), "new: %s", last_message);
+    CHECK(!strcmp(nsnaps[1].title, "New playlist") && !*nsnaps[1].name && nsnaps[1].caret == NAME_TEXT_X + 1
+          && !strcmp(nsnaps[1].mode, "Abc") && !strcmp(nsnaps[1].key2, "abc") && !strcmp(nsnaps[1].cycle, "JKL5"),
+          "the empty name screen: \"%s\", \"%s\", caret %d, %s, keys %s, row %s", nsnaps[1].title, nsnaps[1].name,
+          nsnaps[1].caret, nsnaps[1].mode, nsnaps[1].key2, nsnaps[1].cycle);
+    CHECK(!strcmp(nsnaps[2].name, "Road Trip") && nsnaps[2].pending > NAME_TEXT_X && !strcmp(nsnaps[2].key2, "abc")
+          && !strcmp(nsnaps[2].cycle, "pqrs7"),
+          "typed: \"%s\" (pending at %d), keys %s, the key's row \"%s\"", nsnaps[2].name, nsnaps[2].pending,
+          nsnaps[2].key2, nsnaps[2].cycle);
+    CHECK(dirctl.total == 3 && dirctl.list_no == 3 && dirctl.active == 3 && dirctl.top == 1 && dirctl.bottom == 3,
+          "the list on the new playlist: total %d, on %d (line %d), rows %d to %d", dirctl.total, dirctl.list_no,
+          dirctl.active, dirctl.top, dirctl.bottom);
+    CHECK(writes_while_playing == 0 && status == PLAY_PLAYING && *timer_tag() == 0x84, "new: %d writes while playing",
+          writes_while_playing);
+
+    /* a name that is there (the letter case aside): the message, and the name again to change it; held 2 adds a 2 */
+    start_keys();
+    type_keys("focus");
+    ok_key();
+    type_keys("2");
+    ok_key();
+    push_press(KEY_RETURN);                             /* "Add songs": leave at once */
+    list_at(3, 2);                                      /* a page of two: the new playlist lies behind it */
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && has_text(alive("Focus2.m3u"), "") && has_text(focus, DANGER),
+          "taken: %#x, %d messages (%s)", r, dialogs, last_message);
+    CHECK(!strncmp(last_message, "text 6: \"Focus\"", 15), "taken: %s", last_message);
+    check_library(__LINE__);
+    CHECK(dirctl.total == 4 && dirctl.list_no == 4 && dirctl.top == 3 && dirctl.active == 2 && dirctl.bottom == 4,
+          "on the new playlist behind the page: total %d, on %d (line %d), rows %d to %d", dirctl.total,
+          dirctl.list_no, dirctl.active, dirctl.top, dirctl.bottom);
+
+    /* Return on an empty name: nothing */
+    start_keys();
+    push_press(KEY_RETURN);
+    before = node_count;
+    list_at(4, 6);
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == RESULT_REDRAW && node_count == before && dirctl.total == 4, "left: %#x, %d files more", r,
+          node_count - before);
+
+    /* "Rename" NothingMuch, longer than three pieces of the copy: four Returns take "Much" off */
+    snprintf(long_text, sizeof long_text, "%s%s%s", X, filler(500), DANGER);
+    set_file(nothing, long_text);
+    rebuild_library();
+    start_keys();
+    push(SNAP(3));
+    type_keys("<<<<");
+    ok_key();
+    r = m3u_option(pi, RESULT_RENAME, (u32)m3u_row("NothingMuch"));
+    k = alive("Nothing.m3u");
+    CHECK(r == RESULT_REDRAW && nodes[nothing].gone && has_text(k, long_text) && m3u_row("Nothing") > 0,
+          "rename: %#x, old gone %d, new %d", r, nodes[nothing].gone, k);
+    check_library(__LINE__);
+    CHECK(!strcmp(nsnaps[3].title, "Rename") && !strcmp(nsnaps[3].name, "NothingMuch") && !strcmp(nsnaps[3].key2, "abc"),
+          "the rename screen: \"%s\", \"%s\", keys %s", nsnaps[3].title, nsnaps[3].name, nsnaps[3].key2);
+    CHECK(writes_while_playing == 0 && status == PLAY_PLAYING, "rename: %d writes while playing", writes_while_playing);
+    nothing = k;
+
+    /* OK on the name as it was: nothing is written; the disk full in the middle of the copy: the playlist stays as it
+       was, the copy goes again */
+    start_keys();
+    ok_key();
+    before = node_count;
+    k = removed_files;
+    r = m3u_option(pi, RESULT_RENAME, (u32)m3u_row("Nothing"));
+    CHECK(r == RESULT_REDRAW && node_count == before && removed_files == k, "the same name: %#x, %d files more, %d removed",
+          r, node_count - before, removed_files - k);
+    start_keys();
+    type_keys("<Z");
+    ok_key();
+    write_limit = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_RENAME, (u32)m3u_row("Nothing"));
+    write_limit = -1;
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED && has_text(alive("Nothing.m3u"), long_text)
+          && alive("NothinZ.m3u") < 0, "disk full: %#x, %d messages, the copy %d", r, dialogs, alive("NothinZ.m3u"));
+    check_library(__LINE__);
+
+    /* only the letter case: Focus to FOCUS (held Return clears, Menu twice: capitals) */
+    start_keys();
+    push(HELD_BACK_1), push(HELD_BACK_2), push(HELD_BACK_3), push(HELD_BACK_4);
+    type_keys("||focus");
+    push(SNAP(4));
+    ok_key();
+    r = m3u_option(pi, RESULT_RENAME, (u32)m3u_row("Focus"));
+    k = alive("FOCUS.m3u");
+    CHECK(r == RESULT_REDRAW && nodes[focus].gone && has_text(k, DANGER) && alive("~FOCUS.m3u") < 0
+          && m3u_row("FOCUS") > 0, "case: %#x, old gone %d, new %d", r, nodes[focus].gone, k);
+    CHECK(!strcmp(nsnaps[4].mode, "ABC") && !strcmp(nsnaps[4].key2, "abc") && !strcmp(nsnaps[4].name, "FOCUS")
+          && !strcmp(nsnaps[4].cycle, "PQRS7"), "capitals: %s, keys %s, \"%s\", row %s", nsnaps[4].mode,
+          nsnaps[4].key2, nsnaps[4].name, nsnaps[4].cycle);
+    check_library(__LINE__);
+    focus = k;
+
+    /* the name of another playlist: the message, the screen again; held Return and Return leave it */
+    start_keys();
+    push(HELD_BACK_1), push(HELD_BACK_2), push(HELD_BACK_3), push(HELD_BACK_4);
+    type_keys("Nothing");
+    ok_key();
+    push(HELD_BACK_1), push(HELD_BACK_2), push(HELD_BACK_3), push(HELD_BACK_4);
+    push_press(KEY_RETURN);
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_RENAME, (u32)m3u_row("FOCUS"));
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && !strncmp(last_message, "text 6: \"Nothing\"", 17)
+          && has_text(alive("FOCUS.m3u"), DANGER) && has_text(alive("Nothing.m3u"), long_text),
+          "rename to a taken name: %#x, %d messages, %s", r, dialogs, last_message);
+    check_library(__LINE__);
+
+    /* inside a playlist: Rename names that one ("abc": small letters after the space too) */
+    browser_enter_dir(BROW_SON, m3u_row("Nothing"), &b);
+    start_keys();
+    type_keys("| new");
+    ok_key();
+    r = m3u_option(pi, RESULT_RENAME, 1);
+    CHECK(r == RESULT_REDRAW && has_text(alive("Nothing new.m3u"), long_text) && alive("Nothing.m3u") < 0,
+          "rename inside: %#x", r);
+    check_library(__LINE__);
+
+    /* inside a playlist: New playlist makes one; the list (that playlist's songs) stays as it was */
+    start_keys();
+    type_keys("Inner");
+    ok_key();
+    push_press(KEY_RETURN);
+    list_at(2, 6);                                      /* (Nothing new: two songs) */
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == RESULT_REDRAW && has_text(alive("Inner.m3u"), "") && dirctl.total == 2 && dirctl.list_no == 1,
+          "new inside: %#x, list total %d on %d", r, dirctl.total, dirctl.list_no);
+    check_library(__LINE__);
+    browser_enter_dir(BROW_PARENT, 0, &b);
+
+    /* typing: three presses of 2 give C (the start: a capital), and it is marked; a second later it stays and the
+       caret follows; four more are 2 (the digit after the letters); Menu: abc, then ABC; held Del clears; held 7 is 7;
+       the volume key's pop-up and the screen again; 30 w are 26 W, of which the end shows; OK takes them */
+    start_keys();
+    go_key(K_OF(2));
+    push_press(KEY_PLAY), push_press(KEY_PLAY), push_press(KEY_PLAY);
+    push(SNAP(5));
+    push(IDLE(101));
+    push(SNAP(6));
+    push_press(KEY_PLAY), push_press(KEY_PLAY), push_press(KEY_PLAY), push_press(KEY_PLAY);
+    push(SNAP(7));
+    push_press(KEY_MENU);
+    push(SNAP(8));
+    push_press(KEY_MENU);
+    push(SNAP(9));
+    go_key(K_DEL);
+    push(RAW_KEY(KEY_PLAY, KT_DOWN)), push(RAW_KEY(KEY_PLAY, KT_LONG)), push(RAW_KEY(KEY_PLAY, 0x0200));
+    tapped = 0;
+    type_keys("7 1");
+    push(RAW_KEY(0x0a, KT_DOWN)), push(RAW_KEY(0x0a, KT_SHORT_UP));
+    push(SNAP(10));
+    push(HELD_BACK_1), push(HELD_BACK_2), push(HELD_BACK_3), push(HELD_BACK_4);
+    for (k = 0; k < 30; k++)
+        type_keys("w");
+    push(SNAP(11));
+    ok_key();
+    push_press(KEY_RETURN);
+    volume_popups = 0;
+    list_at(4, 6);
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(!strcmp(nsnaps[5].name, "C") && nsnaps[5].pending == NAME_TEXT_X && !strcmp(nsnaps[5].cycle, "ABC2"),
+          "three presses: \"%s\" pending at %d, row \"%s\"", nsnaps[5].name, nsnaps[5].pending, nsnaps[5].cycle);
+    CHECK(!strcmp(nsnaps[6].name, "C") && nsnaps[6].pending < 0 && nsnaps[6].caret == NAME_TEXT_X + 8 + 1
+          && !strcmp(nsnaps[6].cycle, "abc2"), "a second later: \"%s\" pending %d caret %d row %s", nsnaps[6].name,
+          nsnaps[6].pending, nsnaps[6].caret, nsnaps[6].cycle);
+    CHECK(!strcmp(nsnaps[7].name, "C2") && nsnaps[7].pending == NAME_TEXT_X + 8, "four presses: \"%s\" at %d",
+          nsnaps[7].name, nsnaps[7].pending);
+    CHECK(!strcmp(nsnaps[8].mode, "abc") && !strcmp(nsnaps[9].mode, "ABC") && !strcmp(nsnaps[9].cycle, "ABC2")
+          && !strcmp(nsnaps[9].name, "C2"), "Menu: %s, %s, row %s, \"%s\"", nsnaps[8].mode, nsnaps[9].mode,
+          nsnaps[9].cycle, nsnaps[9].name);
+    CHECK(!strcmp(nsnaps[10].name, "7 1") && volume_popups == 1, "held keys: \"%s\", %d pop-ups", nsnaps[10].name,
+          volume_popups);
+    snprintf(want, sizeof want, "%.26s", "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWW");
+    wide = (int)strlen(nsnaps[11].name);
+    {
+        u16 w[32];
+        int i;
+        w[0] = 0xfeff;
+        for (i = 0; nsnaps[11].name[i]; i++)
+            w[1 + i] = (u16)nsnaps[11].name[i];
+        w[1 + i] = 0;
+        CHECK(wide >= 8 && wide < 26 && !strncmp(nsnaps[11].name, want, (size_t)wide) && text_width(w, 32) <= 116 - 3,
+              "a long name: its end \"%s\" (%d pixels)", nsnaps[11].name, text_width(w, 32));
+    }
+    strcat(want, ".m3u");
+    CHECK(r == RESULT_REDRAW && has_text(alive(want), ""), "26 characters: %#x", r);
+    check_library(__LINE__);
+
+    /* spaces at the ends are not taken, and a name of spaces only is no name: OK does nothing */
+    start_keys();
+    type_keys(" ");
+    ok_key();
+    at_key = K_OK;                                      /* (still on the name screen, on OK) */
+    push(SNAP(12));
+    type_keys("  Mix  ");
+    ok_key();
+    push_press(KEY_RETURN);
+    list_at(5, 6);
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == RESULT_REDRAW && has_text(alive("Mix.m3u"), "") && !strcmp(nsnaps[12].title, "New playlist")
+          && !*nsnaps[12].name, "spaces: %#x, still on \"%s\" with \"%s\"", r, nsnaps[12].title, nsnaps[12].name);
+    check_library(__LINE__);
+
+    /* a system message ends the screen with its result; nothing is made */
+    start_keys();
+    type_keys("Gone");
+    push(APP(0x8104));
+    before = node_count;
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == 0x8104 && node_count == before && *timer_tag() == 0x84, "system message: %#x", r);
+
+    /* the list and the library disagree: Rename says so at once; without M3U.LIB a new playlist is not left behind */
+    rows_extra = 1;
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_RENAME, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED, "rename, disagree: %#x", r);
+    rows_extra = 0;
+    nodes[lib].gone = 1;
+    start_keys();
+    type_keys("Lost");
+    ok_key();
+    dialogs = 0;
+    r = m3u_option(pi, RESULT_NEW_LIST, 1);
+    CHECK(r == RESULT_REDRAW && dialogs == 1 && last_dialog_text == S_OPEN_FAILED && alive("Lost.m3u") < 0,
+          "no library: %#x, %d messages, file %d", r, dialogs, alive("Lost.m3u"));
+    nodes[lib].gone = 0;
+    CHECK(created_over == 0, "%d creates over a file that was there", created_over);
+    raw_keys = 0;
+    on_snapshot = NULL;
+}
+
 static void test_search(void)
 {
     const char *log = getenv("SEARCH_SCREENS");
     if (log)
         draw_log = fopen(log, "w");
-    screen_check = check_layout;
+    screen_check = check_screens;
     test_matching();
     test_search_keys();
     test_search_songs();
     test_search_long();
     test_add_songs();
+    test_names();
     if (draw_log)
         fclose(draw_log);
     draw_log = NULL;

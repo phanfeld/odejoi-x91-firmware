@@ -47,7 +47,10 @@ to 30 end in "Search" (text 44, icon 107, the routine 0x181613e7 of the built-in
 since stage 19) point at the rows of 26 to 30. `MUSIC.STY` text 44, "Reached maximum number of 'Playlists' …" (only
 for a full built-in playlist), reads "Search" in English. Since stage 26 lists 26 to 30 have "Add songs" in front of
 "Search" (text 30, before "Clear [%s]?", asked only before clearing a built-in playlist; icon 15; the routine of the
-built-in "Playlist 3" row, 0x181613ef, which returns 0x8607).
+built-in "Playlist 3" row, 0x181613ef, which returns 0x8607). Since stage 27 "New playlist" (text 13, before "[%s]
+cleared!"; icon 0; 0x181613df, the song lists' "Add to playlist", 0x8605) and "Rename" (text 7, before "Which playlist
+to add to?"; icon 52; 0x18181201, a routine of the music menu's bank that returns 0x860f and that no row used) follow
+"Add songs". The option menu leaves with any result that is not its own and hands it to the result handler.
 
 ## The playing screen
 
